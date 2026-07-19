@@ -370,7 +370,6 @@ function spawnSplash(clientX, clientY, strength) {
 const controls = {
   theta: 0.7, phi: 1.15, radius: 5.0,
   targetTheta: 0.7, targetPhi: 1.15, targetRadius: 5.0,
-  minPhi: 0.15, maxPhi: Math.PI - 0.15,
   minRadius: 2.6, maxRadius: 12.0,
   idleTime: 0
 };
@@ -409,9 +408,12 @@ canvas.addEventListener("pointermove", (e) => {
   if (pointers.size === 1) {
     const dx = e.clientX - prev.x;
     const dy = e.clientY - prev.y;
-    controls.targetTheta -= dx * 0.005;
-    controls.targetPhi = Math.min(controls.maxPhi,
-      Math.max(controls.minPhi, controls.targetPhi - dy * 0.005));
+    /* Kein Pol-Anschlag: die Kamera rotiert ueber Zenit/Nadir hinweg weiter.
+       Auf der kopfueber-Haelfte der Bahn (sin(phi) < 0) wird die
+       Horizontalrichtung gespiegelt, damit der Drag natuerlich bleibt. */
+    const upFlip = Math.sin(controls.phi) < 0 ? -1 : 1;
+    controls.targetTheta -= dx * 0.005 * upFlip;
+    controls.targetPhi -= dy * 0.005;
 
     /* Finger/Maus wirbelt das Wasser waehrend des Drehens auf:
        gedrosselte Kielwasser-Wellen entlang der Beruehrungsspur,
@@ -491,6 +493,7 @@ function animate() {
     controls.radius * Math.cos(controls.phi),
     controls.radius * Math.sin(controls.phi) * Math.cos(controls.theta)
   );
+  camera.up.set(0, Math.sin(controls.phi) >= 0 ? 1 : -1, 0);
   camera.lookAt(0, window.FILL_LOOK_Y || 0, 0);
 
   for (const s of fogSprites) {
