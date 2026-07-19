@@ -1,0 +1,14 @@
+<Window x:Class="DarkWaterScreensaver.ScreensaverWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:wv2="clr-namespace:Microsoft.Web.WebView2.Wpf;assembly=Microsoft.Web.WebView2.Wpf"
+        Title="Dark Water"
+        WindowStyle="None"
+        ResizeMode="NoResize"
+        ShowInTaskbar="False"
+        Topmost="True"
+        Cursor="None"
+        Background="#05060C"
+        WindowStartupLocation="Manual">
+    <wv2:WebView2 x:Name="WebView" />
+</Window>

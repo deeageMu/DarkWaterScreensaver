@@ -1,0 +1,30 @@
+<Window x:Class="DarkWaterScreensaver.SettingsWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Dark Water – Bildschirmschoner"
+        SizeToContent="WidthAndHeight"
+        ResizeMode="NoResize"
+        WindowStartupLocation="CenterScreen"
+        ShowInTaskbar="True">
+    <StackPanel Margin="20" MinWidth="300">
+        <TextBlock Text="Szene" FontWeight="Bold" Margin="0,0,0,8" />
+        <StackPanel x:Name="ScenePanel" Margin="8,0,0,12" />
+
+        <CheckBox x:Name="RandomCheckBox"
+                  Content="Zufällig wechseln"
+                  Checked="OnRandomToggled"
+                  Unchecked="OnRandomToggled"
+                  Margin="0,4,0,4" />
+        <StackPanel Orientation="Horizontal" Margin="24,0,0,16">
+            <TextBlock Text="alle " VerticalAlignment="Center" />
+            <TextBox x:Name="IntervalTextBox" Width="44" VerticalAlignment="Center"
+                     HorizontalContentAlignment="Center" />
+            <TextBlock Text=" Minuten (1–120)" VerticalAlignment="Center" />
+        </StackPanel>
+
+        <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
+            <Button Content="OK" Width="80" Margin="0,0,8,0" IsDefault="True" Click="OnOk" />
+            <Button Content="Abbrechen" Width="80" IsCancel="True" />
+        </StackPanel>
+    </StackPanel>
+</Window>
