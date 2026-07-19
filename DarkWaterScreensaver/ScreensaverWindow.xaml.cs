@@ -1,4 +1,5 @@
 using System.Windows;
+using System.Windows.Input;
 using System.Windows.Interop;
 
 namespace DarkWaterScreensaver;
@@ -6,14 +7,36 @@ namespace DarkWaterScreensaver;
 public partial class ScreensaverWindow : Window
 {
     private readonly Win32.RECT _monitorRect;
+    private readonly bool _interactive;
     private string? _sceneFile;
     private bool _webViewReady;
 
-    internal ScreensaverWindow(Win32.RECT monitorRect)
+    internal ScreensaverWindow(Win32.RECT monitorRect, bool interactive = false)
     {
         InitializeComponent();
         _monitorRect = monitorRect;
+        _interactive = interactive;
+
+        if (interactive)
+        {
+            // /i-Modus: Maus/Zoom steuern die Szene, nur Escape beendet.
+            Cursor = Cursors.Arrow;
+            Topmost = false;
+            ShowInTaskbar = true;
+            PreviewKeyDown += OnEscapeKey;
+            WebView.KeyDown += OnEscapeKey;
+        }
+
         Loaded += OnLoaded;
+    }
+
+    private void OnEscapeKey(object sender, KeyEventArgs e)
+    {
+        if (e.Key == Key.Escape)
+        {
+            e.Handled = true;
+            Close();
+        }
     }
 
     protected override void OnSourceInitialized(EventArgs e)
@@ -52,6 +75,6 @@ public partial class ScreensaverWindow : Window
     private void TryNavigate()
     {
         if (_webViewReady && _sceneFile is not null)
-            WebView.CoreWebView2.Navigate(SceneCatalog.GetSaverUri(_sceneFile).AbsoluteUri);
+            WebView.CoreWebView2.Navigate(SceneCatalog.GetUri(_sceneFile, saverMode: !_interactive).AbsoluteUri);
     }
 }

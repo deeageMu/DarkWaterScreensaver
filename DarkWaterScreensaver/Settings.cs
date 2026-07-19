@@ -27,11 +27,15 @@ public static class SceneCatalog
     public static bool Exists(string file) =>
         All.Any(s => string.Equals(s.File, file, StringComparison.OrdinalIgnoreCase));
 
-    /// <summary>file:///-URI der Szene inkl. ?mode=saver (blendet Hint und Cursor aus).</summary>
-    public static Uri GetSaverUri(string file)
+    /// <summary>
+    /// file:///-URI der Szene. Im Saver-Modus mit ?mode=saver
+    /// (blendet Hint und Cursor aus), interaktiv ohne Parameter.
+    /// </summary>
+    public static Uri GetUri(string file, bool saverMode)
     {
         var path = Path.Combine(ScenesRoot, file);
-        return new Uri(new Uri(path).AbsoluteUri + "?mode=saver");
+        var uri = new Uri(path).AbsoluteUri;
+        return new Uri(saverMode ? uri + "?mode=saver" : uri);
     }
 
     public static string PickRandom(Random rng, string? exclude = null)

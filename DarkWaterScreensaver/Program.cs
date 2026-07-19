@@ -7,7 +7,8 @@ internal enum LaunchMode
 {
     Saver,
     Configure,
-    Preview
+    Preview,
+    Interactive
 }
 
 public static class Program
@@ -31,6 +32,11 @@ public static class Program
                 if (hwnd != IntPtr.Zero)
                     new WindowInteropHelper(settingsWindow) { Owner = hwnd };
                 return app.Run(settingsWindow);
+
+            case LaunchMode.Interactive:
+                var interactiveController = new SaverController(app, interactive: true);
+                interactiveController.Start();
+                return app.Run();
 
             case LaunchMode.Saver:
             default:
@@ -69,6 +75,7 @@ public static class Program
         {
             "s" => (LaunchMode.Saver, IntPtr.Zero),
             "p" => (LaunchMode.Preview, hwnd),
+            "i" or "interactive" => (LaunchMode.Interactive, IntPtr.Zero),
             _ => (LaunchMode.Configure, hwnd)
         };
     }

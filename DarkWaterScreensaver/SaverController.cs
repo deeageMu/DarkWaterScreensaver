@@ -12,12 +12,17 @@ namespace DarkWaterScreensaver;
 internal sealed class SaverController
 {
     private readonly Application _app;
+    private readonly bool _interactive;
     private readonly Settings _settings = Settings.Load();
     private readonly Random _rng = new();
     private readonly List<ScreensaverWindow> _windows = [];
     private string _currentScene = "";
 
-    public SaverController(Application app) => _app = app;
+    public SaverController(Application app, bool interactive = false)
+    {
+        _app = app;
+        _interactive = interactive;
+    }
 
     public void Start()
     {
@@ -37,16 +42,26 @@ internal sealed class SaverController
             });
         }
 
+        if (_interactive)
+        {
+            // Interaktiv nur ein Fenster auf dem Primärmonitor (Ursprung 0,0).
+            var primary = monitors.FirstOrDefault(m => m.Left == 0 && m.Top == 0);
+            monitors = [primary.Width > 0 ? primary : monitors[0]];
+        }
+
         foreach (var monitor in monitors)
         {
-            var window = new ScreensaverWindow(monitor);
+            var window = new ScreensaverWindow(monitor, _interactive);
             _windows.Add(window);
             window.Show();
             window.NavigateToScene(_currentScene);
         }
 
-        InputWatcher.Start(OnUserInput);
-        _app.Exit += (_, _) => InputWatcher.Stop();
+        if (!_interactive)
+        {
+            InputWatcher.Start(OnUserInput);
+            _app.Exit += (_, _) => InputWatcher.Stop();
+        }
 
         if (_settings.Mode == SaverMode.Random && SceneCatalog.All.Count > 1)
         {
