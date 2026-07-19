@@ -13,6 +13,22 @@ A Windows screensaver (`.scr`) that renders dark, stormy Three.js water scenes
 |---|---|
 | ![Knot](screenshots/dark-water-knot.png) | ![Knot alive](screenshots/dark-water-knot-alive.png) |
 
+## Glow
+
+With the **Glow** setting enabled, the scenes are lit from within by a pulsing
+light that shifts between glowing white and glowing blue. Cube and sphere glow
+across their whole body; in the knot scenes a glowing spot wanders very slowly
+along the knot strand. The screenshots below were taken at 80 % glow intensity,
+with lightning strikes passing through the water.
+
+| Cube | Sphere |
+|---|---|
+| ![Cube with glow](screenshots/dark-water-cube-glow.png) | ![Sphere with glow](screenshots/dark-water-sphere-glow.png) |
+
+| Knot | Knot (alive) |
+|---|---|
+| ![Knot with glow](screenshots/dark-water-knot-glow.png) | ![Knot alive with glow](screenshots/dark-water-knot-alive-glow.png) |
+
 ## Requirements
 
 - Windows 10 or 11
@@ -73,7 +89,9 @@ The settings dialog (`/c`) offers:
 - **Scene**: cube, sphere, knot, or knot (alive)
 - **Random switching**: picks a random scene at start and switches to a
   different random scene every X minutes (1–120, default 10)
+- **Glow**: pulsing white/blue inner light — the whole body for cube and
+  sphere, a slowly wandering glow spot for the knot scenes
 
 Settings are stored per user in the registry under
 `HKEY_CURRENT_USER\Software\DarkWaterScreensaver`
-(`Mode`, `SceneFile`, `IntervalMinutes`).
+(`Mode`, `SceneFile`, `IntervalMinutes`, `Glow`).

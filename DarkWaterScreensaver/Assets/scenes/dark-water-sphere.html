@@ -55,7 +55,7 @@ const GLSL_COMMON = `
   #define MAX_RIPPLES ${MAX_RIPPLES}
   #define RADIUS ${SPHERE_RADIUS.toFixed(2)}
   uniform float uTime;
-  /* 1.0 = "inner glow" enabled in settings, 0.0 = off */
+  /* "inner glow" intensity from the settings, 0.0 = off .. 1.0 = full */
   uniform float uGlow;
   /* xyz = Einheitsrichtung des Einschlags, w = Startzeit (-1 = inaktiv) */
   uniform vec4 uRipples[MAX_RIPPLES];
@@ -244,7 +244,7 @@ const FRAGMENT_SHADER = `
     /* ---- Inner glow (optional): pulsing white/blue light from inside the
        form. Brightest where the view looks straight into the volume; wave
        crests let more light shine through than troughs. ---- */
-    if (uGlow > 0.5) {
+    if (uGlow > 0.001) {
       float facing = pow(max(dot(N, V), 0.0), 1.6);
       /* irregular breathing pulse built from incommensurable frequencies */
       float pulse = 0.55 + 0.45 * sin(t * 1.15 + 1.8 * sin(t * 0.31));
@@ -253,7 +253,7 @@ const FRAGMENT_SHADER = `
       float w = 0.5 + 0.5 * sin(t * 0.47 + nUnit.x * 2.4 + nUnit.y * 1.7);
       vec3 innerCol = mix(vec3(0.40, 0.60, 1.00), vec3(1.00, 0.98, 0.95), w);
       float transmit = 0.70 + 0.60 * clamp(waveRaw(nUnit, t) * 0.5 + 0.5, 0.0, 1.0);
-      col += innerCol * facing * pulse * transmit * 0.55;
+      col += innerCol * facing * pulse * transmit * 0.55 * uGlow;
     }
 
     /* ---- Gischt: Wellenkaemme + Blitze + Splashes ---- */
@@ -317,9 +317,9 @@ const sphereMat = new THREE.ShaderMaterial({
 /* merge() klont Vector4-Arrays nicht sauber, daher separat setzen */
 sphereMat.uniforms.uRipples = { value: rippleUniform };
 sphereMat.uniforms.uRippleStrength = { value: rippleStrength };
-/* "inner glow" toggle from the screensaver settings (?glow=1) */
-sphereMat.uniforms.uGlow.value =
-  new URLSearchParams(location.search).get("glow") === "1" ? 1.0 : 0.0;
+/* "inner glow" intensity from the screensaver settings (?glow=0..1) */
+sphereMat.uniforms.uGlow.value = Math.min(1, Math.max(0,
+  parseFloat(new URLSearchParams(location.search).get("glow")) || 0));
 const sphere = new THREE.Mesh(sphereGeo, sphereMat);
 scene.add(sphere);
 
