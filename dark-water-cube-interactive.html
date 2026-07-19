@@ -1,0 +1,498 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>Dunkler Wasserkubus – interaktiv</title>
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #05060c; }
+  canvas { display: block; touch-action: none; }
+  #hint {
+    position: fixed; left: 50%; bottom: 14px; transform: translateX(-50%);
+    color: #6d739c; font: 12px/1.4 system-ui, sans-serif; letter-spacing: 0.08em;
+    text-transform: uppercase; opacity: 0.7; pointer-events: none;
+    transition: opacity 1.2s ease; white-space: nowrap;
+  }
+</style>
+</head>
+<body>
+<div id="hint">Tippen: Splash &nbsp;·&nbsp; Ziehen: drehen &amp; aufwirbeln &nbsp;·&nbsp; Rad / Pinch: Zoom</div>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script>
+"use strict";
+
+/* ---------- Renderer, Szene, Kamera ---------- */
+
+const renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: "high-performance" });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2.5)); // hochauflösend
+renderer.setSize(window.innerWidth, window.innerHeight);
+document.body.appendChild(renderer.domElement);
+
+const FOG_COLOR = 0x05060c;
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(FOG_COLOR);
+scene.fog = new THREE.FogExp2(FOG_COLOR, 0.055);
+
+const camera = new THREE.PerspectiveCamera(50, window.innerWidth / window.innerHeight, 0.1, 100);
+
+/* ---------- Gemeinsamer GLSL-Code ---------- */
+
+const MAX_RIPPLES = 20;
+
+const GLSL_COMMON = `
+  #define MAX_RIPPLES ${MAX_RIPPLES}
+  uniform float uTime;
+  /* xy = uv des Einschlags, z = Startzeit (-1 = inaktiv), w = Flaechencode */
+  uniform vec4 uRipples[MAX_RIPPLES];
+  /* Staerke pro Einschlag: 1.0 = Tap-Splash, ~0.5 = Aufwirbeln beim Ziehen */
+  uniform float uRippleStrength[MAX_RIPPLES];
+
+  float hash1(float n) { return fract(sin(n * 12.9898) * 43758.5453); }
+  float hash2(vec2 p)  { return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
+
+  float vnoise(vec2 p) {
+    vec2 i = floor(p);
+    vec2 f = fract(p);
+    vec2 u = f * f * (3.0 - 2.0 * f);
+    float a = hash2(i);
+    float b = hash2(i + vec2(1.0, 0.0));
+    float c = hash2(i + vec2(0.0, 1.0));
+    float d = hash2(i + vec2(1.0, 1.0));
+    return mix(mix(a, b, u.x), mix(c, d, u.x), u.y);
+  }
+
+  float fbm(vec2 p) {
+    float v = 0.0;
+    float a = 0.5;
+    for (int i = 0; i < 4; i++) {
+      v += a * vnoise(p);
+      p = p * 2.03 + vec2(17.3, 9.1);
+      a *= 0.5;
+    }
+    return v;
+  }
+
+  /* Rohe Grundwellenhoehe, ca. [-1, 1] */
+  float waveRaw(vec2 uv, float t) {
+    vec2 p = uv * 6.0;
+    float h = 0.0;
+    h += sin(p.x * 1.7 + t * 0.9) * 0.30;
+    h += sin(p.y * 2.3 - t * 0.7 + sin(p.x + t * 0.3) * 0.6) * 0.22;
+    h += (fbm(p * 1.6 + vec2(t * 0.25, -t * 0.20)) - 0.5) * 1.05;
+    h += (fbm(p * 4.2 + vec2(-t * 0.55, t * 0.42)) - 0.5) * 0.42;
+    return h;
+  }
+
+  /* Ripple-Hoehe durch Nutzer-Einschlaege (deutlich hoeher als Grundwellen) */
+  float rippleHeight(vec2 uv, float faceCode, float t) {
+    float h = 0.0;
+    for (int i = 0; i < MAX_RIPPLES; i++) {
+      vec4 rp = uRipples[i];
+      if (rp.z < 0.0) continue;
+      if (abs(rp.w - faceCode) > 0.5) continue;
+      float age = t - rp.z;
+      if (age < 0.0 || age > 3.2) continue;
+      float s = uRippleStrength[i];
+      float r = distance(uv, rp.xy);
+      float front = age * 0.26;
+      /* zentrale Splash-Spitze direkt nach dem Einschlag */
+      h += exp(-age * 6.0) * exp(-r * r * 700.0) * 1.6 * s;
+      /* auslaufende, gedaempfte Ringwellen */
+      float env = exp(-pow((r - front) * 9.0, 2.0));
+      h += env * exp(-age * 1.3) * cos(r * 75.0 - age * 16.0) * 1.1 * s;
+    }
+    return h * 0.055;
+  }
+
+  float totalHeight(vec2 uv, float faceCode, float t) {
+    return waveRaw(uv, t) * 0.045 + rippleHeight(uv, faceCode, t);
+  }
+
+  float faceCodeOf(vec3 n) {
+    return dot(floor(n + 0.5), vec3(1.0, 3.0, 5.0));
+  }
+`;
+
+const VERTEX_SHADER = `
+  #include <fog_pars_vertex>
+  varying vec2 vUv;
+  varying vec3 vWorldPos;
+  varying vec3 vObjNormal;
+  ${GLSL_COMMON}
+  void main() {
+    vUv = uv;
+    vObjNormal = normal;
+    float fc = faceCodeOf(normal);
+    float h = totalHeight(uv, fc, uTime);
+    vec3 displaced = position + normal * h;
+    vec4 wp = modelMatrix * vec4(displaced, 1.0);
+    vWorldPos = wp.xyz;
+    vec4 mvPosition = viewMatrix * wp;
+    gl_Position = projectionMatrix * mvPosition;
+    #include <fog_vertex>
+  }
+`;
+
+const FRAGMENT_SHADER = `
+  #include <fog_pars_fragment>
+  varying vec2 vUv;
+  varying vec3 vWorldPos;
+  varying vec3 vObjNormal;
+  ${GLSL_COMMON}
+
+  void main() {
+    float t = uTime;
+    float fc = faceCodeOf(vObjNormal);
+
+    /* Geometrische Normale aus Bildschirmableitungen */
+    vec3 dpdx = dFdx(vWorldPos);
+    vec3 dpdy = dFdy(vWorldPos);
+    vec3 N = normalize(cross(dpdx, dpdy));
+    vec3 V = normalize(cameraPosition - vWorldPos);
+    if (dot(N, V) < 0.0) N = -N;
+
+    /* Feine Normalstoerung: Gradient von Grundwellen + Ripples */
+    float e = 0.004;
+    float h0 = totalHeight(vUv, fc, t);
+    float gx = (totalHeight(vUv + vec2(e, 0.0), fc, t) - h0) / e;
+    float gy = (totalHeight(vUv + vec2(0.0, e), fc, t) - h0) / e;
+
+    vec2 duvdx = dFdx(vUv);
+    vec2 duvdy = dFdy(vUv);
+    vec3 T = normalize( dpdx * duvdy.y - dpdy * duvdx.y);
+    vec3 B = normalize(-dpdx * duvdy.x + dpdy * duvdx.x);
+    N = normalize(N - (T * gx + B * gy) * 1.6);
+
+    /* Dunkles, reflektierendes Wasser */
+    float fresnel = pow(1.0 - max(dot(N, V), 0.0), 5.0);
+    vec3 deepCol = vec3(0.006, 0.012, 0.028);
+    vec3 shallowCol = vec3(0.030, 0.055, 0.105);
+    vec3 col = mix(deepCol, shallowCol, fresnel);
+
+    vec3 R = reflect(-V, N);
+    float horizon = 1.0 - clamp(abs(R.y), 0.0, 1.0);
+    col += vec3(0.055, 0.045, 0.110) * pow(horizon, 3.0) * (0.35 + 0.65 * fresnel);
+
+    vec3 L1 = normalize(vec3(0.45, 0.85, 0.25));
+    vec3 L2 = normalize(vec3(-0.60, 0.35, -0.55));
+    col += vec3(0.55, 0.62, 0.85) * pow(max(dot(R, L1), 0.0), 90.0) * 0.55;
+    col += vec3(0.35, 0.30, 0.70) * pow(max(dot(R, L2), 0.0), 60.0) * 0.30;
+
+    /* ---- Blitze: zufaellige, lila-blaue Fronten ---- */
+    float faceSeed = fc + 7.0;
+    float boltCore = 0.0;
+    float boltGlow = 0.0;
+    for (int i = 0; i < 4; i++) {
+      float fi = float(i);
+      float seed = faceSeed * 7.31 + fi * 13.7;
+      float per = 3.0 + hash1(seed) * 5.5;
+      float phase = hash1(seed + 1.0);
+      float cn  = floor(t / per + phase);   /* Zyklusnummer */
+      float cyc = fract(t / per + phase);
+
+      /* Zufall pro Zyklus: viele Zyklen fallen komplett aus */
+      float gate = step(0.55, hash1(seed + cn * 17.0));
+      /* zufaellige Achse, Richtung und Geschwindigkeit pro Zyklus */
+      float axis    = step(0.5, hash1(seed + cn * 29.0));
+      float dirSign = step(0.5, hash1(seed + cn * 31.0)) * 2.0 - 1.0;
+      float window  = 0.25 + 0.45 * hash1(seed + cn * 41.0); /* Anteil des Zyklus, in dem der Blitz laeuft */
+      float prog = cyc / window;
+      if (prog > 1.0) gate = 0.0;
+
+      float along = mix(vUv.x, vUv.y, axis);
+      float perp  = mix(vUv.y, vUv.x, axis);
+      along = mix(along, 1.0 - along, step(dirSign, 0.0));
+      float head = mix(-0.20, 1.20, clamp(prog, 0.0, 1.0));
+
+      float jag = (vnoise(vec2(perp * 9.0 + seed + cn, t * 1.7)) - 0.5) * 0.13
+                + (vnoise(vec2(perp * 34.0 + seed + cn, t * 3.4)) - 0.5) * 0.05;
+
+      float d = along - (head + jag);
+      float fade = smoothstep(0.0, 0.12, prog) * (1.0 - smoothstep(0.88, 1.0, prog));
+      float flicker = 0.65 + 0.35 * vnoise(vec2(t * 12.0, seed + cn));
+      float segments = smoothstep(0.25, 0.55, vnoise(vec2(perp * 3.5 + seed + cn, t * 0.9)));
+
+      float core = exp(-abs(d) * 240.0);
+      float glow = exp(-abs(d) * 22.0);
+      float wake = exp(-abs(d) * 6.5) * 0.45;
+
+      boltCore += core * 2.4 * gate * fade * flicker * segments;
+      boltGlow += (glow * 0.9 + wake) * gate * fade * flicker * (0.4 + 0.6 * segments);
+    }
+
+    vec3 glowCol = vec3(0.30, 0.18, 0.95);
+    vec3 coreCol = vec3(0.80, 0.72, 1.00);
+    float waveMod = 0.75 + 0.5 * clamp(waveRaw(vUv, t) * 0.5 + 0.5, 0.0, 1.0);
+    col += glowCol * boltGlow * waveMod;
+    col += coreCol * boltCore;
+
+    /* ---- Gischt: Wellenkaemme + Blitze + Splashes ---- */
+    float raw = waveRaw(vUv, t);
+    float sprayNoise = fbm(vUv * 42.0 + vec2(t * 0.9, -t * 0.7));
+    float crest = smoothstep(0.55, 0.95, raw * 0.9 + sprayNoise * 0.55);
+    float speckle = smoothstep(0.62, 0.92, vnoise(vUv * 160.0 + vec2(t * 2.0, t * 1.3)));
+    float spray = crest * (0.35 + 0.65 * speckle);
+    spray += clamp(boltGlow, 0.0, 1.0) * speckle * 0.5;
+
+    /* Spritzendes Wasser an den Einschlagstellen */
+    float splashSpray = 0.0;
+    float splashFlash = 0.0;
+    for (int i = 0; i < MAX_RIPPLES; i++) {
+      vec4 rp = uRipples[i];
+      if (rp.z < 0.0) continue;
+      if (abs(rp.w - fc) > 0.5) continue;
+      float age = t - rp.z;
+      if (age < 0.0 || age > 3.2) continue;
+      float s = uRippleStrength[i];
+      float r = distance(vUv, rp.xy);
+      float front = age * 0.26;
+      /* Gischtring, der mit der Wellenfront nach aussen laeuft */
+      splashSpray += exp(-age * 1.8) * exp(-pow((r - front) * 13.0, 2.0)) * s;
+      /* hochspritzende Tropfen rund ums Zentrum, kurz nach dem Einschlag */
+      float drops = smoothstep(0.5, 0.9,
+        vnoise(vUv * 220.0 + vec2(rp.z * 37.0, age * 6.0)));
+      splashSpray += exp(-age * 3.5) * exp(-r * r * 260.0) * drops * 1.6 * s;
+      /* kurzes, kaltes Aufleuchten des Wassers im Zentrum */
+      splashFlash += exp(-age * 4.5) * exp(-r * r * 320.0) * s;
+    }
+    spray += splashSpray * (0.5 + 0.5 * speckle);
+    col += vec3(0.35, 0.42, 0.75) * splashFlash * 0.5;
+
+    col = mix(col, vec3(0.42, 0.47, 0.58), clamp(spray, 0.0, 1.0) * 0.8);
+
+    gl_FragColor = vec4(col, 1.0);
+    #include <fog_fragment>
+  }
+`;
+
+/* ---------- Der Kubus ---------- */
+
+const rippleUniform = [];
+for (let i = 0; i < MAX_RIPPLES; i++) {
+  rippleUniform.push(new THREE.Vector4(0, 0, -1, 0));
+}
+const rippleStrength = new Array(MAX_RIPPLES).fill(0);
+
+const SEG = 96;
+const cubeGeo = new THREE.BoxGeometry(2, 2, 2, SEG, SEG, SEG);
+const cubeMat = new THREE.ShaderMaterial({
+  vertexShader: VERTEX_SHADER,
+  fragmentShader: FRAGMENT_SHADER,
+  uniforms: THREE.UniformsUtils.merge([
+    THREE.UniformsLib.fog,
+    { uTime: { value: 0 } }
+  ]),
+  fog: true,
+  extensions: { derivatives: true }
+});
+/* merge() klont Vector4-Arrays nicht sauber, daher separat setzen */
+cubeMat.uniforms.uRipples = { value: rippleUniform };
+cubeMat.uniforms.uRippleStrength = { value: rippleStrength };
+const cube = new THREE.Mesh(cubeGeo, cubeMat);
+scene.add(cube);
+
+/* ---------- Nebelschwaden ---------- */
+
+function makeFogTexture() {
+  const size = 256;
+  const cnv = document.createElement("canvas");
+  cnv.width = cnv.height = size;
+  const ctx = cnv.getContext("2d");
+  const g = ctx.createRadialGradient(size / 2, size / 2, 0, size / 2, size / 2, size / 2);
+  g.addColorStop(0.0, "rgba(140,146,190,0.55)");
+  g.addColorStop(0.4, "rgba(110,116,165,0.22)");
+  g.addColorStop(1.0, "rgba(90,95,140,0.0)");
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, size, size);
+  return new THREE.CanvasTexture(cnv);
+}
+
+const fogTex = makeFogTexture();
+const fogSprites = [];
+for (let i = 0; i < 14; i++) {
+  const mat = new THREE.SpriteMaterial({
+    map: fogTex,
+    transparent: true,
+    opacity: 0.05 + Math.random() * 0.07,
+    depthWrite: false
+  });
+  const s = new THREE.Sprite(mat);
+  const angle = Math.random() * Math.PI * 2;
+  const radius = 1.7 + Math.random() * 1.6;
+  s.position.set(Math.cos(angle) * radius, -0.9 + Math.random() * 1.9, Math.sin(angle) * radius);
+  const scale = 2.2 + Math.random() * 2.6;
+  s.scale.set(scale, scale, 1);
+  s.userData = {
+    angle, radius,
+    speed: (Math.random() * 0.5 + 0.15) * (Math.random() < 0.5 ? -1 : 1) * 0.05,
+    bob: Math.random() * Math.PI * 2
+  };
+  fogSprites.push(s);
+  scene.add(s);
+}
+
+/* ---------- Splash-Erzeugung per Raycast ---------- */
+
+const raycaster = new THREE.Raycaster();
+const ndc = new THREE.Vector2();
+let rippleIndex = 0;
+const clock = new THREE.Clock();
+
+function spawnSplash(clientX, clientY, strength) {
+  ndc.x = (clientX / window.innerWidth) * 2 - 1;
+  ndc.y = -(clientY / window.innerHeight) * 2 + 1;
+  raycaster.setFromCamera(ndc, camera);
+  const hits = raycaster.intersectObject(cube);
+  if (hits.length === 0 || !hits[0].uv || !hits[0].face) return;
+  const uv = hits[0].uv;
+  const n = hits[0].face.normal; // Objektraum, Kubus ist nicht rotiert
+  const faceCode =
+    Math.round(n.x) * 1 + Math.round(n.y) * 3 + Math.round(n.z) * 5;
+  const slot = rippleIndex % MAX_RIPPLES;
+  rippleUniform[slot].set(uv.x, uv.y, clock.elapsedTime, faceCode);
+  rippleStrength[slot] = strength;
+  rippleIndex++;
+}
+
+/* ---------- Orbit-Steuerung + Tap-Erkennung ---------- */
+
+const controls = {
+  theta: 0.7, phi: 1.15, radius: 5.0,
+  targetTheta: 0.7, targetPhi: 1.15, targetRadius: 5.0,
+  minPhi: 0.15, maxPhi: Math.PI - 0.15,
+  minRadius: 2.6, maxRadius: 12.0,
+  idleTime: 0
+};
+
+const pointers = new Map();
+let pinchStartDist = 0;
+let pinchStartRadius = 0;
+let lastStir = 0;
+const canvas = renderer.domElement;
+
+function markActive() {
+  controls.idleTime = 0;
+  const hint = document.getElementById("hint");
+  if (hint) hint.style.opacity = "0";
+}
+
+canvas.addEventListener("pointerdown", (e) => {
+  canvas.setPointerCapture(e.pointerId);
+  pointers.set(e.pointerId, {
+    x: e.clientX, y: e.clientY,
+    startX: e.clientX, startY: e.clientY,
+    startTime: performance.now()
+  });
+  if (pointers.size === 2) {
+    const [a, b] = [...pointers.values()];
+    pinchStartDist = Math.hypot(a.x - b.x, a.y - b.y);
+    pinchStartRadius = controls.targetRadius;
+  }
+  markActive();
+});
+
+canvas.addEventListener("pointermove", (e) => {
+  const prev = pointers.get(e.pointerId);
+  if (!prev) return;
+  markActive();
+  if (pointers.size === 1) {
+    const dx = e.clientX - prev.x;
+    const dy = e.clientY - prev.y;
+    controls.targetTheta -= dx * 0.005;
+    controls.targetPhi = Math.min(controls.maxPhi,
+      Math.max(controls.minPhi, controls.targetPhi - dy * 0.005));
+
+    /* Finger/Maus wirbelt das Wasser waehrend des Drehens auf:
+       gedrosselte Kielwasser-Wellen entlang der Beruehrungsspur,
+       Staerke waechst mit der Bewegungsgeschwindigkeit */
+    const now = performance.now();
+    const speed = Math.hypot(dx, dy);
+    if (now - lastStir > 60 && speed > 1.5) {
+      const strength = Math.min(0.75, 0.30 + speed * 0.012);
+      spawnSplash(e.clientX, e.clientY, strength);
+      lastStir = now;
+    }
+  }
+  prev.x = e.clientX;
+  prev.y = e.clientY;
+  if (pointers.size === 2) {
+    const [a, b] = [...pointers.values()];
+    const dist = Math.hypot(a.x - b.x, a.y - b.y);
+    if (pinchStartDist > 0) {
+      const r = pinchStartRadius * (pinchStartDist / dist);
+      controls.targetRadius = Math.min(controls.maxRadius, Math.max(controls.minRadius, r));
+    }
+  }
+});
+
+canvas.addEventListener("pointerup", (e) => {
+  const p = pointers.get(e.pointerId);
+  if (p && pointers.size === 1) {
+    const moved = Math.hypot(e.clientX - p.startX, e.clientY - p.startY);
+    const held = performance.now() - p.startTime;
+    /* Kurzes Tippen/Klicken ohne Ziehen => Splash */
+    if (moved < 8 && held < 350) spawnSplash(e.clientX, e.clientY, 1.0);
+  }
+  pointers.delete(e.pointerId);
+  if (pointers.size < 2) pinchStartDist = 0;
+});
+
+canvas.addEventListener("pointercancel", (e) => {
+  pointers.delete(e.pointerId);
+  if (pointers.size < 2) pinchStartDist = 0;
+});
+
+canvas.addEventListener("wheel", (e) => {
+  e.preventDefault();
+  markActive();
+  const r = controls.targetRadius * Math.exp(e.deltaY * 0.001);
+  controls.targetRadius = Math.min(controls.maxRadius, Math.max(controls.minRadius, r));
+}, { passive: false });
+
+/* ---------- Resize ---------- */
+
+window.addEventListener("resize", () => {
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(window.innerWidth, window.innerHeight);
+});
+
+/* ---------- Render-Schleife ---------- */
+
+function animate() {
+  requestAnimationFrame(animate);
+  const dt = Math.min(clock.getDelta(), 0.05);
+  const t = clock.elapsedTime;
+
+  cubeMat.uniforms.uTime.value = t;
+  cubeMat.uniforms.uRipples.value = rippleUniform;
+
+  const k = 1.0 - Math.pow(0.0001, dt);
+  controls.theta += (controls.targetTheta - controls.theta) * k;
+  controls.phi += (controls.targetPhi - controls.phi) * k;
+  controls.radius += (controls.targetRadius - controls.radius) * k;
+
+  controls.idleTime += dt;
+  if (controls.idleTime > 3) controls.targetTheta += dt * 0.05;
+
+  camera.position.set(
+    controls.radius * Math.sin(controls.phi) * Math.sin(controls.theta),
+    controls.radius * Math.cos(controls.phi),
+    controls.radius * Math.sin(controls.phi) * Math.cos(controls.theta)
+  );
+  camera.lookAt(0, 0, 0);
+
+  for (const s of fogSprites) {
+    const u = s.userData;
+    u.angle += u.speed * dt;
+    s.position.x = Math.cos(u.angle) * u.radius;
+    s.position.z = Math.sin(u.angle) * u.radius;
+    s.position.y += Math.sin(t * 0.3 + u.bob) * 0.0006;
+  }
+
+  renderer.render(scene, camera);
+}
+animate();
+</script>
+</body>
+</html>
