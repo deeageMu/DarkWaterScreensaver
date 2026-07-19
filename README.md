@@ -3,6 +3,16 @@
 A Windows screensaver (`.scr`) that renders dark, stormy Three.js water scenes
 (cube, sphere, torus knot) fullscreen via WebView2.
 
+## Scenes
+
+| Cube | Sphere |
+|---|---|
+| ![Cube](screenshots/dark-water-cube.png) | ![Sphere](screenshots/dark-water-sphere.png) |
+
+| Knot | Knot (alive) |
+|---|---|
+| ![Knot](screenshots/dark-water-knot.png) | ![Knot alive](screenshots/dark-water-knot-alive.png) |
+
 ## Requirements
 
 - Windows 10 or 11
