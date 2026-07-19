@@ -88,10 +88,10 @@ The settings dialog (`/c`) offers:
 
 - **Scene**: cube, sphere, knot, or knot (alive)
 - **Random switching**: picks a random scene at start and switches to a
-  different random scene every X minutes (1–120, default 10)
+  different random scene every X seconds (5–3600, default 30)
 - **Glow**: pulsing white/blue inner light — the whole body for cube and
   sphere, a slowly wandering glow spot for the knot scenes
 
 Settings are stored per user in the registry under
 `HKEY_CURRENT_USER\Software\DarkWaterScreensaver`
-(`Mode`, `SceneFile`, `IntervalMinutes`, `Glow`).
+(`Mode`, `SceneFile`, `IntervalSeconds`, `Glow`).

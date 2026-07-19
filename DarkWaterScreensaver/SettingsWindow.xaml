@@ -17,9 +17,9 @@
                   Margin="0,4,0,4" />
         <StackPanel Orientation="Horizontal" Margin="24,0,0,12">
             <TextBlock Text="alle " VerticalAlignment="Center" />
-            <TextBox x:Name="IntervalTextBox" Width="44" VerticalAlignment="Center"
+            <TextBox x:Name="IntervalTextBox" Width="54" VerticalAlignment="Center"
                      HorizontalContentAlignment="Center" />
-            <TextBlock Text=" Minuten (1–120)" VerticalAlignment="Center" />
+            <TextBlock Text=" Sekunden (5–3600)" VerticalAlignment="Center" />
         </StackPanel>
 
         <CheckBox x:Name="GlowCheckBox"

@@ -56,12 +56,12 @@ public static class SceneCatalog
 public sealed class Settings
 {
     private const string KeyPath = @"Software\DarkWaterScreensaver";
-    public const int MinInterval = 1;
-    public const int MaxInterval = 120;
+    public const int MinInterval = 5;
+    public const int MaxInterval = 3600;
 
     public SaverMode Mode { get; set; } = SaverMode.Fixed;
     public string SceneFile { get; set; } = SceneCatalog.All[0].File;
-    public int IntervalMinutes { get; set; } = 10;
+    public int IntervalSeconds { get; set; } = 30;
     public bool Glow { get; set; }
 
     public static Settings Load()
@@ -78,8 +78,8 @@ public sealed class Settings
         if (key.GetValue("SceneFile") is string scene && SceneCatalog.Exists(scene))
             settings.SceneFile = scene;
 
-        if (key.GetValue("IntervalMinutes") is int interval)
-            settings.IntervalMinutes = Math.Clamp(interval, MinInterval, MaxInterval);
+        if (key.GetValue("IntervalSeconds") is int interval)
+            settings.IntervalSeconds = Math.Clamp(interval, MinInterval, MaxInterval);
 
         if (key.GetValue("Glow") is int glow)
             settings.Glow = glow != 0;
@@ -92,7 +92,7 @@ public sealed class Settings
         using var key = Registry.CurrentUser.CreateSubKey(KeyPath);
         key.SetValue("Mode", Mode.ToString());
         key.SetValue("SceneFile", SceneFile);
-        key.SetValue("IntervalMinutes", IntervalMinutes, RegistryValueKind.DWord);
+        key.SetValue("IntervalSeconds", IntervalSeconds, RegistryValueKind.DWord);
         key.SetValue("Glow", Glow ? 1 : 0, RegistryValueKind.DWord);
     }
 }

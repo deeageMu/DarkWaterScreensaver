@@ -67,7 +67,7 @@ internal sealed class SaverController
         {
             var timer = new DispatcherTimer
             {
-                Interval = TimeSpan.FromMinutes(_settings.IntervalMinutes)
+                Interval = TimeSpan.FromSeconds(_settings.IntervalSeconds)
             };
             timer.Tick += (_, _) => SwitchToNextRandomScene();
             timer.Start();
