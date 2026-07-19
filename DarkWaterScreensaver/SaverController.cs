@@ -51,7 +51,7 @@ internal sealed class SaverController
 
         foreach (var monitor in monitors)
         {
-            var window = new ScreensaverWindow(monitor, _interactive);
+            var window = new ScreensaverWindow(monitor, _interactive, _settings.Glow);
             _windows.Add(window);
             window.Show();
             window.NavigateToScene(_currentScene);

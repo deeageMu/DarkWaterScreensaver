@@ -8,14 +8,16 @@ public partial class ScreensaverWindow : Window
 {
     private readonly Win32.RECT _monitorRect;
     private readonly bool _interactive;
+    private readonly bool _glow;
     private string? _sceneFile;
     private bool _webViewReady;
 
-    internal ScreensaverWindow(Win32.RECT monitorRect, bool interactive = false)
+    internal ScreensaverWindow(Win32.RECT monitorRect, bool interactive = false, bool glow = false)
     {
         InitializeComponent();
         _monitorRect = monitorRect;
         _interactive = interactive;
+        _glow = glow;
 
         if (interactive)
         {
@@ -75,6 +77,6 @@ public partial class ScreensaverWindow : Window
     private void TryNavigate()
     {
         if (_webViewReady && _sceneFile is not null)
-            WebView.CoreWebView2.Navigate(SceneCatalog.GetUri(_sceneFile, saverMode: !_interactive).AbsoluteUri);
+            WebView.CoreWebView2.Navigate(SceneCatalog.GetUri(_sceneFile, saverMode: !_interactive, glow: _glow).AbsoluteUri);
     }
 }

@@ -28,14 +28,17 @@ public static class SceneCatalog
         All.Any(s => string.Equals(s.File, file, StringComparison.OrdinalIgnoreCase));
 
     /// <summary>
-    /// file:///-URI der Szene. Im Saver-Modus mit ?mode=saver
-    /// (blendet Hint und Cursor aus), interaktiv ohne Parameter.
+    /// file:/// URI of the scene. Saver mode appends ?mode=saver (hides hint
+    /// and cursor); glow=1 enables the inner glow effect.
     /// </summary>
-    public static Uri GetUri(string file, bool saverMode)
+    public static Uri GetUri(string file, bool saverMode, bool glow = false)
     {
         var path = Path.Combine(ScenesRoot, file);
         var uri = new Uri(path).AbsoluteUri;
-        return new Uri(saverMode ? uri + "?mode=saver" : uri);
+        var query = new List<string>();
+        if (saverMode) query.Add("mode=saver");
+        if (glow) query.Add("glow=1");
+        return new Uri(query.Count > 0 ? uri + "?" + string.Join("&", query) : uri);
     }
 
     public static string PickRandom(Random rng, string? exclude = null)
@@ -59,6 +62,7 @@ public sealed class Settings
     public SaverMode Mode { get; set; } = SaverMode.Fixed;
     public string SceneFile { get; set; } = SceneCatalog.All[0].File;
     public int IntervalMinutes { get; set; } = 10;
+    public bool Glow { get; set; }
 
     public static Settings Load()
     {
@@ -77,6 +81,9 @@ public sealed class Settings
         if (key.GetValue("IntervalMinutes") is int interval)
             settings.IntervalMinutes = Math.Clamp(interval, MinInterval, MaxInterval);
 
+        if (key.GetValue("Glow") is int glow)
+            settings.Glow = glow != 0;
+
         return settings;
     }
 
@@ -86,5 +93,6 @@ public sealed class Settings
         key.SetValue("Mode", Mode.ToString());
         key.SetValue("SceneFile", SceneFile);
         key.SetValue("IntervalMinutes", IntervalMinutes, RegistryValueKind.DWord);
+        key.SetValue("Glow", Glow ? 1 : 0, RegistryValueKind.DWord);
     }
 }

@@ -51,6 +51,8 @@ const MAX_RIPPLES = 20;
 const GLSL_COMMON = `
   #define MAX_RIPPLES ${MAX_RIPPLES}
   uniform float uTime;
+  /* 1.0 = "inner glow" enabled in settings, 0.0 = off */
+  uniform float uGlow;
   /* xy = uv des Einschlags, z = Startzeit (-1 = inaktiv), w = Flaechencode */
   uniform vec4 uRipples[MAX_RIPPLES];
   /* Staerke pro Einschlag: 1.0 = Tap-Splash, ~0.5 = Aufwirbeln beim Ziehen */
@@ -237,6 +239,21 @@ const FRAGMENT_SHADER = `
     col += glowCol * boltGlow * waveMod;
     col += coreCol * boltCore;
 
+    /* ---- Inner glow (optional): pulsing white/blue light from inside the
+       form. Brightest where the view looks straight into the volume; wave
+       crests let more light shine through than troughs. ---- */
+    if (uGlow > 0.5) {
+      float facing = pow(max(dot(N, V), 0.0), 1.6);
+      /* irregular breathing pulse built from incommensurable frequencies */
+      float pulse = 0.55 + 0.45 * sin(t * 1.15 + 1.8 * sin(t * 0.31));
+      pulse *= 0.80 + 0.20 * sin(t * 2.73 + 4.0);
+      /* slow drift between glowing blue and glowing white, varying across the surface */
+      float w = 0.5 + 0.5 * sin(t * 0.47 + vUv.x * 2.4 + vUv.y * 1.7);
+      vec3 innerCol = mix(vec3(0.40, 0.60, 1.00), vec3(1.00, 0.98, 0.95), w);
+      float transmit = 0.70 + 0.60 * clamp(waveRaw(vUv, t) * 0.5 + 0.5, 0.0, 1.0);
+      col += innerCol * facing * pulse * transmit * 0.55;
+    }
+
     /* ---- Gischt: Wellenkaemme + Blitze + Splashes ---- */
     float raw = waveRaw(vUv, t);
     float sprayNoise = fbm(vUv * 42.0 + vec2(t * 0.9, -t * 0.7));
@@ -291,7 +308,7 @@ const cubeMat = new THREE.ShaderMaterial({
   fragmentShader: FRAGMENT_SHADER,
   uniforms: THREE.UniformsUtils.merge([
     THREE.UniformsLib.fog,
-    { uTime: { value: 0 } }
+    { uTime: { value: 0 }, uGlow: { value: 0 } }
   ]),
   fog: true,
   extensions: { derivatives: true }
@@ -299,6 +316,9 @@ const cubeMat = new THREE.ShaderMaterial({
 /* merge() klont Vector4-Arrays nicht sauber, daher separat setzen */
 cubeMat.uniforms.uRipples = { value: rippleUniform };
 cubeMat.uniforms.uRippleStrength = { value: rippleStrength };
+/* "inner glow" toggle from the screensaver settings (?glow=1) */
+cubeMat.uniforms.uGlow.value =
+  new URLSearchParams(location.search).get("glow") === "1" ? 1.0 : 0.0;
 const cube = new THREE.Mesh(cubeGeo, cubeMat);
 scene.add(cube);
 

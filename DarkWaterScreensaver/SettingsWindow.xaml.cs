@@ -31,6 +31,7 @@ public partial class SettingsWindow : Window
 
         RandomCheckBox.IsChecked = settings.Mode == SaverMode.Random;
         IntervalTextBox.Text = settings.IntervalMinutes.ToString();
+        GlowCheckBox.IsChecked = settings.Glow;
         UpdateEnabledState();
     }
 
@@ -55,7 +56,8 @@ public partial class SettingsWindow : Window
             Mode = RandomCheckBox.IsChecked == true ? SaverMode.Random : SaverMode.Fixed,
             SceneFile = _sceneButtons.FirstOrDefault(b => b.IsChecked == true)?.Tag as string
                         ?? SceneCatalog.All[0].File,
-            IntervalMinutes = interval
+            IntervalMinutes = interval,
+            Glow = GlowCheckBox.IsChecked == true
         };
         settings.Save();
         Close();
