@@ -573,5 +573,22 @@ function animate() {
 }
 animate();
 </script>
+<script>
+/* Screensaver-Anpassung: Objekt bildschirmfuellend skalieren.
+   Querformat: vertikal fuellend, Hochformat: horizontal fuellend. */
+(function () {
+  var FILL_RADIUS = 1.9; /* wirksamer Objektradius dieser Szene */
+  function applyFill() {
+    var vHalf = (camera.fov * Math.PI / 180) / 2;
+    var hHalf = Math.atan(Math.tan(vHalf) * (window.innerWidth / window.innerHeight));
+    var d = FILL_RADIUS / Math.sin(Math.min(vHalf, hHalf));
+    controls.minRadius = Math.min(controls.minRadius, d);
+    controls.maxRadius = Math.max(controls.maxRadius, d);
+    controls.radius = controls.targetRadius = d;
+  }
+  applyFill();
+  window.addEventListener("resize", applyFill);
+})();
+</script>
 </body>
 </html>

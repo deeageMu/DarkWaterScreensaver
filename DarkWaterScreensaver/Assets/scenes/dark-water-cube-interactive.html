@@ -489,7 +489,7 @@ function animate() {
     controls.radius * Math.cos(controls.phi),
     controls.radius * Math.sin(controls.phi) * Math.cos(controls.theta)
   );
-  camera.lookAt(0, 0, 0);
+  camera.lookAt(0, window.FILL_LOOK_Y || 0, 0);
 
   for (const s of fogSprites) {
     const u = s.userData;
@@ -502,6 +502,24 @@ function animate() {
   renderer.render(scene, camera);
 }
 animate();
+</script>
+<script>
+/* Screensaver-Anpassung: Objekt bildschirmfuellend skalieren.
+   Querformat: vertikal fuellend, Hochformat: horizontal fuellend. */
+(function () {
+  var FILL_RADIUS = 1.5;
+  window.FILL_LOOK_Y = -0.22; /* Wuerfel sitzt sonst zu tief im Bild */ /* wirksamer Objektradius dieser Szene */
+  function applyFill() {
+    var vHalf = (camera.fov * Math.PI / 180) / 2;
+    var hHalf = Math.atan(Math.tan(vHalf) * (window.innerWidth / window.innerHeight));
+    var d = FILL_RADIUS / Math.sin(Math.min(vHalf, hHalf));
+    controls.minRadius = Math.min(controls.minRadius, d);
+    controls.maxRadius = Math.max(controls.maxRadius, d);
+    controls.radius = controls.targetRadius = d;
+  }
+  applyFill();
+  window.addEventListener("resize", applyFill);
+})();
 </script>
 </body>
 </html>
