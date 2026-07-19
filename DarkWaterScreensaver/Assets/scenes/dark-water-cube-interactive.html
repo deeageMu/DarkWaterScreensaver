@@ -201,16 +201,18 @@ const FRAGMENT_SHADER = `
 
       /* Zufall pro Zyklus: viele Zyklen fallen komplett aus */
       float gate = step(0.55, hash1(seed + cn * 17.0));
-      /* zufaellige Achse, Richtung und Geschwindigkeit pro Zyklus */
-      float axis    = step(0.5, hash1(seed + cn * 29.0));
-      float dirSign = step(0.5, hash1(seed + cn * 31.0)) * 2.0 - 1.0;
+      /* zufaelliger Winkel und Geschwindigkeit pro Zyklus */
+      float ang = hash1(seed + cn * 29.0) * 6.2831853;
       float window  = 0.25 + 0.45 * hash1(seed + cn * 41.0); /* Anteil des Zyklus, in dem der Blitz laeuft */
       float prog = cyc / window;
       if (prog > 1.0) gate = 0.0;
 
-      float along = mix(vUv.x, vUv.y, axis);
-      float perp  = mix(vUv.y, vUv.x, axis);
-      along = mix(along, 1.0 - along, step(dirSign, 0.0));
+      /* Front laeuft in beliebiger Richtung ueber die Flaeche statt
+         parallel zu den Kanten: UV um den Mittelpunkt rotieren */
+      vec2 boltDir = vec2(cos(ang), sin(ang));
+      vec2 uvc = vUv - 0.5;
+      float along = dot(uvc, boltDir) + 0.5;
+      float perp  = dot(uvc, vec2(-boltDir.y, boltDir.x)) + 0.5;
       float head = mix(-0.20, 1.20, clamp(prog, 0.0, 1.0));
 
       float jag = (vnoise(vec2(perp * 9.0 + seed + cn, t * 1.7)) - 0.5) * 0.13
