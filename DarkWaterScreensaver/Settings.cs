@@ -9,7 +9,7 @@ public enum SaverMode
     Random
 }
 
-/// <summary>Katalog der mitgelieferten Szenen unter Assets\scenes.</summary>
+/// <summary>Catalogue of the bundled scenes under Assets\scenes.</summary>
 public static class SceneCatalog
 {
     /// <param name="SupportsEffects">
@@ -21,14 +21,14 @@ public static class SceneCatalog
 
     public static readonly IReadOnlyList<Scene> All =
     [
-        new("dark-water-cube-interactive.html", "Würfel"),
-        new("dark-water-sphere.html", "Sphäre"),
-        new("dark-water-knot.html", "Knoten"),
-        new("dark-water-knot-alive.html", "Knoten (lebendig)"),
-        new("dark-water-octahedron.html", "Oktaeder", SupportsEffects: true),
+        new("dark-water-cube-interactive.html", "Cube"),
+        new("dark-water-sphere.html", "Sphere"),
+        new("dark-water-knot.html", "Knot"),
+        new("dark-water-knot-alive.html", "Knot (alive)"),
+        new("dark-water-octahedron.html", "Octahedron", SupportsEffects: true),
         new("dark-water-truncated-octahedron-hover.html",
-            "Abgestumpftes Oktaeder (Schwebeflug)", SupportsEffects: true),
-        new("dark-water-dive-fast.html", "Durchflug (schnell)", SupportsEffects: true)
+            "Truncated octahedron (hover)", SupportsEffects: true),
+        new("dark-water-dive-fast.html", "Dive (fast)", SupportsEffects: true)
     ];
 
     public static string ScenesRoot => Path.Combine(AppContext.BaseDirectory, "Assets", "scenes");
@@ -73,7 +73,7 @@ public static class SceneCatalog
     }
 }
 
-/// <summary>Persistierte Einstellungen unter HKCU\Software\DarkWaterScreensaver.</summary>
+/// <summary>Settings persisted under HKCU\Software\DarkWaterScreensaver.</summary>
 public sealed class Settings
 {
     private const string KeyPath = @"Software\DarkWaterScreensaver";
@@ -85,11 +85,11 @@ public sealed class Settings
     public int IntervalSeconds { get; set; } = 30;
     public bool Glow { get; set; }
 
-    /// <summary>Lightning fronts sweeping over the body (scene checkbox "Blitze").</summary>
+    /// <summary>Lightning fronts sweeping over the body (scene checkbox "Lightning").</summary>
     public bool Bolts { get; set; } = true;
 
     /// <summary>
-    /// Colouring (scene checkbox "Färbung"): every inner-glow light gets its own
+    /// Colouring (scene checkbox "Colouring"): every inner-glow light gets its own
     /// random hue instead of only every fifth one.
     /// </summary>
     public bool ColorAll { get; set; }

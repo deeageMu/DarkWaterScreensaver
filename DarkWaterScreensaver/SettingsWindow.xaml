@@ -1,41 +1,41 @@
 <Window x:Class="DarkWaterScreensaver.SettingsWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="Dark Water – Bildschirmschoner"
+        Title="Dark Water – Screensaver"
         SizeToContent="WidthAndHeight"
         ResizeMode="NoResize"
         WindowStartupLocation="CenterScreen"
         ShowInTaskbar="True">
     <StackPanel Margin="20" MinWidth="300">
-        <TextBlock Text="Szene" FontWeight="Bold" Margin="0,0,0,8" />
+        <TextBlock Text="Scene" FontWeight="Bold" Margin="0,0,0,8" />
         <StackPanel x:Name="ScenePanel" Margin="8,0,0,12" />
 
         <CheckBox x:Name="RandomCheckBox"
-                  Content="Zufällig wechseln"
+                  Content="Switch randomly"
                   Checked="OnRandomToggled"
                   Unchecked="OnRandomToggled"
                   Margin="0,4,0,4" />
         <StackPanel Orientation="Horizontal" Margin="24,0,0,12">
-            <TextBlock Text="alle " VerticalAlignment="Center" />
+            <TextBlock Text="every " VerticalAlignment="Center" />
             <TextBox x:Name="IntervalTextBox" Width="54" VerticalAlignment="Center"
                      HorizontalContentAlignment="Center" />
-            <TextBlock Text=" Sekunden (5–3600)" VerticalAlignment="Center" />
+            <TextBlock Text=" seconds (5–3600)" VerticalAlignment="Center" />
         </StackPanel>
 
         <CheckBox x:Name="GlowCheckBox"
-                  Content="Glow (inneres Leuchten)"
+                  Content="Glow (inner light)"
                   Margin="0,0,0,12" />
 
-        <TextBlock x:Name="EffectsHeader" Text="Effekte" FontWeight="Bold" Margin="0,0,0,8" />
+        <TextBlock x:Name="EffectsHeader" Text="Effects" FontWeight="Bold" Margin="0,0,0,8" />
         <StackPanel x:Name="EffectsPanel" Margin="8,0,0,16">
             <CheckBox x:Name="BoltsCheckBox"
-                      Content="Blitze"
+                      Content="Lightning"
                       Margin="0,2,0,2" />
             <CheckBox x:Name="ColorCheckBox"
-                      Content="Färbung (jedes Licht eine Zufallsfarbe)"
+                      Content="Colouring (a random hue for every light)"
                       Margin="0,2,0,2" />
             <TextBlock x:Name="EffectsHint"
-                       Text="Nur für Oktaeder-, Schwebeflug- und Durchflug-Szenen."
+                       Text="Only for the octahedron, hover and dive scenes."
                        FontSize="11" Opacity="0.6" Margin="0,4,0,0"
                        TextWrapping="Wrap" MaxWidth="280"
                        HorizontalAlignment="Left" />
@@ -43,7 +43,7 @@
 
         <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
             <Button Content="OK" Width="80" Margin="0,0,8,0" IsDefault="True" Click="OnOk" />
-            <Button Content="Abbrechen" Width="80" IsCancel="True" />
+            <Button Content="Cancel" Width="80" IsCancel="True" />
         </StackPanel>
     </StackPanel>
 </Window>
