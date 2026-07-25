@@ -1,0 +1,1654 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>Dunkles Wasser – Schwebeflug über das abgestumpfte Oktaeder</title>
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #05060c; }
+  canvas { display: block; touch-action: none; }
+  #hint {
+    position: fixed; left: 50%; bottom: 14px; transform: translateX(-50%);
+    color: #6d739c; font: 12px/1.4 system-ui, sans-serif; letter-spacing: 0.08em;
+    text-transform: uppercase; opacity: 0.7; pointer-events: none;
+    transition: opacity 1.2s ease; white-space: nowrap;
+  }
+  #panel {
+    position: fixed; top: 14px; right: 14px;
+    display: flex; flex-direction: column; gap: 8px;
+    padding: 10px 14px; border-radius: 8px;
+    background: rgba(10, 12, 24, 0.55);
+    border: 1px solid rgba(109, 115, 156, 0.25);
+    backdrop-filter: blur(4px);
+    color: #9aa0c8; font: 12px/1.4 system-ui, sans-serif;
+    letter-spacing: 0.08em; text-transform: uppercase;
+    user-select: none;
+  }
+  #panel label {
+    display: flex; align-items: center; gap: 8px; cursor: pointer;
+  }
+  #panel input[type="checkbox"] {
+    appearance: none; -webkit-appearance: none;
+    width: 15px; height: 15px; margin: 0;
+    border: 1px solid #6d739c; border-radius: 3px;
+    background: transparent; cursor: pointer; position: relative;
+  }
+  #panel input[type="checkbox"]:checked {
+    background: #4c5bd4; border-color: #7d8aff;
+  }
+  #panel input[type="checkbox"]:checked::after {
+    content: ""; position: absolute; left: 4px; top: 1px;
+    width: 4px; height: 8px;
+    border: solid #e8ebff; border-width: 0 2px 2px 0;
+    transform: rotate(45deg);
+  }
+  /* Ebene fuer "Gischt ins Gesicht": glimmende Tropfen-Splats auf dem
+     Bildschirm, additiv wirkend durch weisse Kerne + Farbhalo (Fake-Bloom) */
+  #splat {
+    position: fixed; inset: 0; pointer-events: none; overflow: hidden;
+    mix-blend-mode: screen;
+  }
+  #splat .drop {
+    position: absolute; border-radius: 50%;
+    filter: blur(2px);
+    will-change: opacity, transform;
+  }
+</style>
+</head>
+<body>
+<div id="hint">Tippen / Ziehen: Wasser aufwirbeln &nbsp;·&nbsp; Flug l&auml;uft automatisch</div>
+<div id="panel">
+  <label><input type="checkbox" id="cb-bolts" checked> Blitze</label>
+  <label><input type="checkbox" id="cb-color" checked> F&auml;rbung</label>
+</div>
+<div id="splat"></div>
+<script src="vendor/three.min.js"></script>
+<script>
+/* Fallback fuer Standalone-Vorschau ohne vendor-Ordner */
+if (!window.THREE) {
+  document.write('<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"><\/script>');
+}
+</script>
+<script>
+if (new URLSearchParams(location.search).get("mode") === "saver") {
+  var hintEl = document.getElementById("hint");
+  if (hintEl) hintEl.style.display = "none";
+  var panelEl = document.getElementById("panel");
+  if (panelEl) panelEl.style.display = "none";
+  var saverCss = document.createElement("style");
+  saverCss.textContent = "* { cursor: none !important; }";
+  document.head.appendChild(saverCss);
+}
+</script>
+<script>
+"use strict";
+
+/* Szenario: Ego-Perspektive. Der Betrachter schwebt langsam und knapp
+   ueber der dunklen Wasseroberflaeche der Flaechen eines abgestumpften
+   Oktaeders (6 Quadrate + 8 Sechsecke, gleiche Geometrie und derselbe
+   Shader wie dark-water-truncated-octahedron.html, inkl. nahtlosem
+   dispDir-Displacement nach seamless-face-displacement.md, Weg A).
+
+   Schwebeflug-Mechanik: Der Koerper erhaelt eine GEGLAETTETE Huelle -
+   das harte Maximum der 14 Flaechenebenen-Funktionen wird durch ein
+   Smooth-Maximum ersetzt: f_s(p) = k * ln( Sum_i e^{(n_i.p - d_i)/k} ).
+   Diese Huelle rundet jede Kante mit Radius ~k ab. Die Kamera gleitet
+   mit konstanter Geschwindigkeit auf dieser runden Huelle entlang; ihre
+   "oben"-Richtung ist die Normale der Huelle. Im Flaecheninneren ist das
+   exakt die Flaechennormale (gerader Flug), in der Kantenzone blendet
+   die Normale stetig zur Naechsten ueber - die Ansicht kippt dadurch von
+   selbst LANGSAM ueber die Kante hinunter auf die naechste Flaeche.
+   Keine Nutzerkontrolle ueber Kamera: kein Zoom, keine Neigung. Eine
+   leichte Neigung nach unten ist Standard, damit die Wasseroberflaeche
+   gut sichtbar ist. Tippen/Ziehen wirbelt weiterhin das Wasser auf.
+
+   Weitere Szenario-Merkmale:
+   - Gischt ins Gesicht: In unregelmaessigen Abstaenden schiesst ein
+     Gischtschwall vom Wasser vor der Kamera hoch und fliegt an ihr
+     vorbei. Die Tropfen gluehen von innen (additiv geblendete
+     Soft-Sprites = Fake-"Unreal Bloom"; echtes Bloom-Postprocessing ist
+     in vendor/three.min.js nicht enthalten). Treffen Tropfen die Kamera,
+     erscheinen kurz gluehende Splats auf dem Bildschirm (#splat-Ebene,
+     mix-blend-mode: screen).
+   - Inner Glow verstaerkt: hoehere Intensitaet, groessere Lichtflecken,
+     und die Lichter werden ueber einen mitwandernden Anker (uGlowAnchor,
+     ein Punkt unter der Oberflaeche vor der Kamera) stets im Sichtbereich
+     des Betrachters gehalten. Standard: Faerbung AN (jedes Licht eine
+     eigene Zufallsfarbe).
+   - Blitze plastischer: sie heben zusaetzlich einen realen Wasserruecken
+     an (Blitz-Grat fliesst in totalDisp ein => echte Parallaxe und
+     korrekte Wellen-Schattierung), Kern heisser und schaerfer.
+   - Wellenhoehe variiert: uWaveAmp wird in JS als langsamer Seegang-
+     Zyklus zwischen ruhig und rau animiert. */
+
+/* ---------- Renderer, Szene, Kamera ---------- */
+
+const renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: "high-performance" });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2.5)); // hochauflösend
+renderer.setSize(window.innerWidth, window.innerHeight);
+document.body.appendChild(renderer.domElement);
+
+const FOG_COLOR = 0x05060c;
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(FOG_COLOR);
+scene.fog = new THREE.FogExp2(FOG_COLOR, 0.055);
+
+/* Nahe Ebene klein: die Kamera ist dicht ueber dem Wasser. Ferne Ebene
+   gross und Fog duenner, damit der weit entfernte Rand der grossen
+   Flaeche als dunstiger Horizont sichtbar bleibt. */
+const camera = new THREE.PerspectiveCamera(55, window.innerWidth / window.innerHeight, 0.04, 300);
+scene.fog.density = 0.014;
+
+/* Massstab. BASE ist der normierte Objektraum-Radius (wie in den
+   Orbit-Szenen); GEO vergroessert den Koerper im Weltraum um diesen
+   Faktor. Da der Shader intern mit auf BASE normierten Koordinaten
+   rechnet (position / uGeo), bleiben Wellenlaenge, Wellenhoehe,
+   Ripplegroesse und Blitze in ABSOLUTEN Einheiten konstant – nur die
+   Flaeche wird viel groesser. Zusammen mit der konstanten, kleinen
+   Schwebehoehe (HOVER) entsteht dadurch der Eindruck, auf einen weit
+   entfernten Horizont zuzuschweben (Augenhoehe / Flaechenbreite wird
+   winzig, die Kante rueckt weit weg). */
+const BASE = 0.9;
+const GEO = 9.0;
+const TRUNC_SCALE = BASE * GEO;
+
+/* ---------- Gemeinsamer GLSL-Code ---------- */
+
+const MAX_RIPPLES = 20;
+
+const GLSL_COMMON = `
+  #define MAX_RIPPLES ${MAX_RIPPLES}
+  uniform float uTime;
+  /* "inner glow" intensity from the settings, 0.0 = off .. 1.0 = full */
+  uniform float uGlow;
+  /* Blitze an/aus (Checkbox): 1.0 = an, 0.0 = keine Blitze */
+  uniform float uBolts;
+  /* Faerbung (Checkbox): 1.0 = JEDES Licht hat eine Zufallsfarbe,
+     0.0 = nur jedes fuenfte, der Rest im Blau-Weiss-Drift */
+  uniform float uColorAll;
+  /* Variable Wellenhoehe (Seegang-Zyklus), animiert in JS.
+     Ersetzt den festen Faktor 0.045 der anderen Szenen. */
+  uniform float uWaveAmp;
+  /* Anker fuer den Inner Glow: Punkt unter der Oberflaeche im
+     Sichtbereich der Kamera (normierter Objektraum), animiert in JS */
+  uniform vec3 uGlowAnchor;
+  /* Geometrie-Massstab: position / uGeo ergibt die auf BASE normierte
+     Objektposition, mit der alle Wellen-/Ripple-/Glow-/Blitz-Funktionen
+     rechnen. So bleiben absolute Groessen unabhaengig von GEO. */
+  uniform float uGeo;
+  /* Durchflug-Farbverschiebung: dreht alle Inner-Glow-Farbtoene, sodass
+     sich die neonfarbene Palette bei jedem Durchflug aendert. */
+  uniform float uHueShift;
+  /* Vorberechnete Inner-Glow-Lichter (Performance): Position, Farbe und
+     Helligkeit werden pro Frame in JS berechnet und hier uebergeben, statt
+     sie fuer 60 Lichter pro Pixel im Shader zu evaluieren. uLightData.xyz =
+     Position (normierter Objektraum), .w = Radius-Faktor des Blobs;
+     uLightColor.rgb = Farbe * Helligkeit (env*pulse bereits einmultipliziert).
+     Nur die uLightCount naechsten Lichter werden uebergeben. */
+  #define GLOW_SLOTS 24
+  uniform int uLightCount;
+  uniform vec4 uLightData[GLOW_SLOTS];
+  uniform vec3 uLightColor[GLOW_SLOTS];
+  /* xyz = Einschlagpunkt im Objektraum, w = Startzeit (-1 = inaktiv) */
+  uniform vec4 uRipples[MAX_RIPPLES];
+  /* Staerke pro Einschlag: 1.0 = Tap-Splash, ~0.5 = Aufwirbeln beim Ziehen */
+  uniform float uRippleStrength[MAX_RIPPLES];
+
+  float hash1(float n) { return fract(sin(n * 12.9898) * 43758.5453); }
+  float hash3(vec3 p)  { return fract(sin(dot(p, vec3(127.1, 311.7, 74.7))) * 43758.5453); }
+
+  float vnoise3(vec3 p) {
+    vec3 i = floor(p);
+    vec3 f = fract(p);
+    vec3 u = f * f * (3.0 - 2.0 * f);
+    float n000 = hash3(i);
+    float n100 = hash3(i + vec3(1.0, 0.0, 0.0));
+    float n010 = hash3(i + vec3(0.0, 1.0, 0.0));
+    float n110 = hash3(i + vec3(1.0, 1.0, 0.0));
+    float n001 = hash3(i + vec3(0.0, 0.0, 1.0));
+    float n101 = hash3(i + vec3(1.0, 0.0, 1.0));
+    float n011 = hash3(i + vec3(0.0, 1.0, 1.0));
+    float n111 = hash3(i + vec3(1.0, 1.0, 1.0));
+    return mix(
+      mix(mix(n000, n100, u.x), mix(n010, n110, u.x), u.y),
+      mix(mix(n001, n101, u.x), mix(n011, n111, u.x), u.y),
+      u.z);
+  }
+
+  float fbm3(vec3 p) {
+    float v = 0.0;
+    float a = 0.5;
+    for (int i = 0; i < 4; i++) {
+      v += a * vnoise3(p);
+      p = p * 2.03 + vec3(17.3, 9.1, 4.7);
+      a *= 0.5;
+    }
+    return v;
+  }
+
+  /* Rohe Grundwellenhoehe, ca. [-1, 1]; pos = Objektraum-Position */
+  float waveRaw(vec3 pos, float t) {
+    vec3 p = pos * 3.2;
+    float h = 0.0;
+    h += sin(dot(p, normalize(vec3(0.9, 0.2, 0.4))) * 2.6 + t * 0.9) * 0.30;
+    h += sin(dot(p, normalize(vec3(-0.3, 0.8, 0.5))) * 3.4 - t * 0.7
+             + sin(dot(p, vec3(1.0, 0.0, 0.3)) + t * 0.3) * 0.6) * 0.22;
+    h += (fbm3(p * 1.6 + vec3(t * 0.25, -t * 0.20, t * 0.12)) - 0.5) * 1.05;
+    h += (fbm3(p * 4.2 + vec3(-t * 0.55, t * 0.42, -t * 0.30)) - 0.5) * 0.42;
+    return h;
+  }
+
+  /* Ripple-Hoehe durch Nutzer-Einschlaege (deutlich hoeher als Grundwellen) */
+  float rippleHeight(vec3 pos, float t) {
+    float h = 0.0;
+    for (int i = 0; i < MAX_RIPPLES; i++) {
+      vec4 rp = uRipples[i];
+      if (rp.w < 0.0) continue;
+      float age = t - rp.w;
+      if (age < 0.0 || age > 3.2) continue;
+      float s = uRippleStrength[i];
+      float r = distance(pos, rp.xyz);
+      float front = age * 0.52;
+      /* zentrale Splash-Spitze direkt nach dem Einschlag */
+      h += exp(-age * 6.0) * exp(-r * r * 175.0) * 1.6 * s;
+      /* auslaufende, gedaempfte Ringwellen */
+      float env = exp(-pow((r - front) * 4.5, 2.0));
+      h += env * exp(-age * 1.3) * cos(r * 38.0 - age * 16.0) * 1.1 * s;
+    }
+    return h * 0.055;
+  }
+
+  /* Glatter Blitz-Grat: hebt unter aktiven Entladungen einen echten
+     Wasserruecken an ("plastische" Blitze mit Parallaxe und korrekter
+     Schattierung aus naechster Naehe). Bewusst OHNE das feine
+     vnoise-Zickzack der Leucht-Version, damit die Funktion als Teil von
+     totalDisp guenstig bleibt (sie wird im Fragment-Shader 3x fuer den
+     Normalen-Gradienten ausgewertet). Der Zyklus-/Achsen-/Gate-Code muss
+     exakt dem der Leucht-Blitze entsprechen, damit Grat und Leuchten
+     zusammenfallen. Da der Koerper statisch im Ursprung steht, ist
+     Objektraum == Weltraum und dieselbe pos ist fuer beide nutzbar. */
+  float boltRidge(vec3 pos, float t) {
+    if (uBolts < 0.5) return 0.0;
+    float ridge = 0.0;
+    for (int i = 0; i < 5; i++) {
+      float fi = float(i);
+      float seed = 11.0 + fi * 13.7;
+      float per = 3.0 + hash1(seed) * 5.5;
+      float phase = hash1(seed + 1.0);
+      float cn  = floor(t / per + phase);
+      float cyc = fract(t / per + phase);
+      float gate = step(0.55, hash1(seed + cn * 17.0));
+      vec3 axis = normalize(vec3(
+        hash1(seed + cn * 29.0) - 0.5,
+        hash1(seed + cn * 31.0) - 0.5,
+        hash1(seed + cn * 37.0) - 0.5) + 0.001);
+      float window = 0.25 + 0.45 * hash1(seed + cn * 41.0);
+      float prog = cyc / window;
+      if (gate < 0.5 || prog > 1.0) continue;
+      float d = dot(pos, axis) - mix(-2.6, 2.6, clamp(prog, 0.0, 1.0));
+      float fade = smoothstep(0.0, 0.12, prog) * (1.0 - smoothstep(0.88, 1.0, prog));
+      ridge += exp(-d * d * 45.0) * fade;
+    }
+    return ridge;
+  }
+
+  /* Gesamtverschiebung entlang dispDir. Wellenanteil mit variabler
+     Amplitude (Seegang), plus Nutzer-Ripples, plus Blitz-Grat. */
+  float totalDisp(vec3 pos, float t) {
+    return waveRaw(pos, t) * uWaveAmp + rippleHeight(pos, t)
+         + boltRidge(pos, t) * 0.05;
+  }
+`;
+
+const VERTEX_SHADER = `
+  #include <fog_pars_vertex>
+  /* Verschiebungsrichtung pro Vertex: im Flaecheninneren die Flaechennormale,
+     auf Kanten/Ecken die gemittelte Normale der angrenzenden Flaechen.
+     Dadurch verschieben alle beteiligten Flaechen ihre gemeinsamen
+     Kantenpunkte identisch – die Naht bleibt wasserdicht, es entstehen
+     keine Spalte (siehe seamless-face-displacement.md). */
+  attribute vec3 dispDir;
+  varying vec3 vWorldPos;
+  varying vec3 vObjPos;
+  ${GLSL_COMMON}
+  void main() {
+    /* Auf BASE normierte Objektposition: alle Wellen-/Ripple-Funktionen
+       rechnen damit, sodass ihre absoluten Groessen unabhaengig von GEO
+       sind. vObjPos traegt ebenfalls die normierte Position in den
+       Fragment-Shader. */
+    vec3 pn = position / uGeo;
+    vObjPos = pn;
+    /* h ist bereits eine absolute Verschiebung (in Welteinheiten), daher
+       NICHT mit uGeo multiplizieren: kleine Wellen auf grosser Flaeche. */
+    float h = totalDisp(pn, uTime);
+    vec3 displaced = position + dispDir * h;
+    vec4 wp = modelMatrix * vec4(displaced, 1.0);
+    vWorldPos = wp.xyz;
+    vec4 mvPosition = viewMatrix * wp;
+    gl_Position = projectionMatrix * mvPosition;
+    #include <fog_vertex>
+  }
+`;
+
+const FRAGMENT_SHADER = `
+  #include <fog_pars_fragment>
+  varying vec3 vWorldPos;
+  varying vec3 vObjPos;
+  ${GLSL_COMMON}
+
+  /* Inner-Glow-Lichter werden pro Frame in JS berechnet und als
+     uLightData/uLightColor uebergeben (siehe GLSL_COMMON). Der Shader
+     summiert hier nur noch die billigen Blob-Beitraege – ohne trig,
+     ohne hue2rgb, und nur ueber die naechstgelegenen Lichter. */
+
+  void main() {
+    float t = uTime;
+
+    /* Geometrische Normale aus Bildschirmableitungen */
+    vec3 dpdx = dFdx(vWorldPos);
+    vec3 dpdy = dFdy(vWorldPos);
+    vec3 N = normalize(cross(dpdx, dpdy));
+    vec3 V = normalize(cameraPosition - vWorldPos);
+    if (dot(N, V) < 0.0) N = -N;
+
+    /* Feine Normalstoerung: Gradient NUR der Grundwellen (waveRaw). Die
+       Neigung durch Ripples und Blitz-Grat ist bereits in der aus dFdx/dFdy
+       gewonnenen Geometrie-Normale enthalten (die Vertices sind ja schon
+       verschoben), daher hier nicht noetig – das spart die teuren
+       Ripple-(20) und Blitz-(5)-Schleifen 3x pro Pixel. */
+    float e = 0.008;
+    vec3 T1 = normalize(dpdx);
+    vec3 T2 = normalize(dpdy);
+    float amp = uWaveAmp;
+    float wr0 = waveRaw(vObjPos, t);   /* einmal berechnen, mehrfach nutzen */
+    float h0 = wr0 * amp;
+    float g1 = (waveRaw(vObjPos + T1 * e, t) * amp - h0) / e;
+    float g2 = (waveRaw(vObjPos + T2 * e, t) * amp - h0) / e;
+    N = normalize(N - (T1 * g1 + T2 * g2) * 1.6);
+
+    /* Dunkles, reflektierendes Wasser */
+    float fresnel = pow(1.0 - max(dot(N, V), 0.0), 5.0);
+    vec3 deepCol = vec3(0.006, 0.012, 0.028);
+    vec3 shallowCol = vec3(0.030, 0.055, 0.105);
+    vec3 col = mix(deepCol, shallowCol, fresnel);
+
+    vec3 R = reflect(-V, N);
+    float horizon = 1.0 - clamp(abs(R.y), 0.0, 1.0);
+    col += vec3(0.055, 0.045, 0.110) * pow(horizon, 3.0) * (0.35 + 0.65 * fresnel);
+
+    vec3 L1 = normalize(vec3(0.45, 0.85, 0.25));
+    vec3 L2 = normalize(vec3(-0.60, 0.35, -0.55));
+    col += vec3(0.55, 0.62, 0.85) * pow(max(dot(R, L1), 0.0), 90.0) * 0.55;
+    col += vec3(0.35, 0.30, 0.70) * pow(max(dot(R, L2), 0.0), 60.0) * 0.30;
+
+    /* ---- Blitze: zufaellige, lila-blaue Fronten im WELTRAUM.
+       Aus der Naehe plastischer als in den Orbit-Szenen: schaerferer,
+       heisserer Kern, und der zugehoerige Wasserruecken kommt aus
+       boltRidge in totalDisp (echte Hoehe + Schattierung). ---- */
+    float boltCore = 0.0;
+    float boltGlow = 0.0;
+    if (uBolts > 0.5)
+    for (int i = 0; i < 5; i++) {
+      float fi = float(i);
+      float seed = 11.0 + fi * 13.7;
+      float per = 3.0 + hash1(seed) * 5.5;
+      float phase = hash1(seed + 1.0);
+      float cn  = floor(t / per + phase);   /* Zyklusnummer */
+      float cyc = fract(t / per + phase);
+
+      /* Zufall pro Zyklus: viele Zyklen fallen komplett aus */
+      float gate = step(0.55, hash1(seed + cn * 17.0));
+      /* zufaellige Sweep-Achse pro Zyklus (bestimmt die Laufrichtung) */
+      vec3 axis = normalize(vec3(
+        hash1(seed + cn * 29.0) - 0.5,
+        hash1(seed + cn * 31.0) - 0.5,
+        hash1(seed + cn * 37.0) - 0.5) + 0.001);
+      float window = 0.25 + 0.45 * hash1(seed + cn * 41.0);
+      float prog = cyc / window;
+      /* inaktive Zyklen (Gate zu oder Fenster vorbei) ueberspringen, BEVOR
+         die teuren vnoise3-Aufrufe fuer jag/segments/flicker laufen –
+         meist sind 0-1 der 5 Blitze aktiv */
+      if (gate < 0.5 || prog > 1.0) continue;
+
+      /* Sweep-Koordinate: Projektion der (normierten) Objektposition auf
+         die Achse – skalierungsinvariant, da der Koerper statisch ist */
+      float c = dot(vObjPos, axis);
+      float head = mix(-2.6, 2.6, clamp(prog, 0.0, 1.0));
+
+      float jag = (vnoise3(vObjPos * 6.0 + vec3(seed + cn, t * 1.7, 0.0)) - 0.5) * 0.34
+                + (vnoise3(vObjPos * 20.0 + vec3(0.0, seed + cn, t * 3.4)) - 0.5) * 0.13;
+
+      float d = c - (head + jag);
+      float fade = smoothstep(0.0, 0.12, prog) * (1.0 - smoothstep(0.88, 1.0, prog));
+      float flicker = 0.65 + 0.35 * vnoise3(vec3(t * 12.0, seed + cn, 3.7));
+      float segments = smoothstep(0.25, 0.55,
+        vnoise3(vObjPos * 2.4 + vec3(seed + cn, 0.0, t * 0.9)));
+
+      /* schaerferer Kern + engeres Glimmen als in den Orbit-Szenen */
+      float core = exp(-abs(d) * 130.0);
+      float glow = exp(-abs(d) * 13.0);
+      float wake = exp(-abs(d) * 3.2) * 0.45;
+
+      boltCore += core * 3.0 * fade * flicker * segments;
+      boltGlow += (glow * 0.9 + wake) * fade * flicker * (0.4 + 0.6 * segments);
+    }
+
+    vec3 glowCol = vec3(0.30, 0.18, 0.95);
+    vec3 coreCol = vec3(0.92, 0.88, 1.00);
+    float waveMod = 0.75 + 0.5 * clamp(wr0 * 0.5 + 0.5, 0.0, 1.0);
+    col += glowCol * boltGlow * waveMod;
+    col += coreCol * boltCore;
+
+    /* ---- Inner glow (vorberechnet in JS): billige Blob-Summe ueber die
+       naechsten Lichter. env, pulse und Farbe stecken bereits in
+       uLightColor; uLightData.w ist der Blob-Radius-Faktor. ---- */
+    if (uGlow > 0.001) {
+      float facing = pow(max(dot(N, V), 0.0), 1.6);
+      float transmit = 0.70 + 0.60 * clamp(wr0 * 0.5 + 0.5, 0.0, 1.0);
+      float k = (0.35 + 0.65 * facing) * transmit * uGlow;
+      for (int i = 0; i < GLOW_SLOTS; i++) {
+        if (i >= uLightCount) break;
+        vec4 ld = uLightData[i];
+        vec3 d = vObjPos - ld.xyz;
+        float gd2 = dot(d, d);
+        if (gd2 > 2.9) continue;               /* ~ (1.7)^2 early-out */
+        col += uLightColor[i] * exp(-gd2 * ld.w) * k;
+      }
+    }
+
+    /* ---- Gischt: Wellenkaemme + Blitze + Splashes. Der Kamm-Anteil
+       skaliert mit der variablen Wellenhoehe: ruhige See -> kaum Gischt,
+       raue See -> deutlich mehr. (uWaveAmp * 22.2 == 1 bei der
+       Referenzamplitude 0.045 der anderen Szenen.) ---- */
+    float raw = wr0 * (uWaveAmp * 22.2);
+    float sprayNoise = fbm3(vObjPos * 22.0 + vec3(t * 0.9, -t * 0.7, t * 0.5));
+    float crest = smoothstep(0.55, 0.95, raw * 0.9 + sprayNoise * 0.55);
+    float speckle = smoothstep(0.62, 0.92,
+      vnoise3(vObjPos * 85.0 + vec3(t * 2.0, t * 1.3, -t * 1.1)));
+    float spray = crest * (0.35 + 0.65 * speckle);
+    spray += clamp(boltGlow, 0.0, 1.0) * speckle * 0.5;
+
+    /* Spritzendes Wasser an den Einschlagstellen */
+    float splashSpray = 0.0;
+    float splashFlash = 0.0;
+    for (int i = 0; i < MAX_RIPPLES; i++) {
+      vec4 rp = uRipples[i];
+      if (rp.w < 0.0) continue;
+      float age = t - rp.w;
+      if (age < 0.0 || age > 3.2) continue;
+      float s = uRippleStrength[i];
+      float r = distance(vObjPos, rp.xyz);
+      float front = age * 0.52;
+      /* Gischtring, der mit der Wellenfront nach aussen laeuft */
+      splashSpray += exp(-age * 1.8) * exp(-pow((r - front) * 6.5, 2.0)) * s;
+      /* hochspritzende Tropfen rund ums Zentrum, kurz nach dem Einschlag */
+      float drops = smoothstep(0.5, 0.9,
+        vnoise3(vObjPos * 120.0 + vec3(rp.w * 37.0, age * 6.0, 0.0)));
+      splashSpray += exp(-age * 3.5) * exp(-r * r * 65.0) * drops * 1.6 * s;
+      /* kurzes, kaltes Aufleuchten des Wassers im Zentrum */
+      splashFlash += exp(-age * 4.5) * exp(-r * r * 80.0) * s;
+    }
+    spray += splashSpray * (0.5 + 0.5 * speckle);
+    col += vec3(0.35, 0.42, 0.75) * splashFlash * 0.5;
+
+    col = mix(col, vec3(0.42, 0.47, 0.58), clamp(spray, 0.0, 1.0) * 0.8);
+
+    gl_FragColor = vec4(col, 1.0);
+    #include <fog_fragment>
+  }
+`;
+
+/* ---------- Geometrie des abgestumpften Oktaeders ----------
+   Identisch zu dark-water-truncated-octahedron.html, inklusive der zwei
+   Weg-A-Fixes aus seamless-face-displacement.md Abschnitt 6:
+   Wicklung wird zusammen mit der Normale umgedreht (6.1), und der
+   Positions-Schluessel wird gitterquantisiert per Math.round statt mit
+   toFixed gebildet (6.2). */
+
+function makeTruncatedOctahedronGeometry(scale, seg) {
+  const V = (a, b, c) => new THREE.Vector3(a, b, c).multiplyScalar(scale);
+
+  function squareFace(axis, sign) {
+    const val = 2 * sign;
+    const others = ["x", "y", "z"].filter((a) => a !== axis);
+    const mk = (o1, o2) => {
+      const c = { x: 0, y: 0, z: 0 };
+      c[axis] = val; c[others[0]] = o1; c[others[1]] = o2;
+      return V(c.x, c.y, c.z);
+    };
+    return [mk(1, 0), mk(0, 1), mk(-1, 0), mk(0, -1)];
+  }
+
+  const HEX_PERMS = [[0, 1, 2], [0, 2, 1], [1, 2, 0], [2, 1, 0], [2, 0, 1], [1, 0, 2]];
+  function hexFace(ex, ey, ez) {
+    return HEX_PERMS.map(([a, b, c]) => {
+      const sx = a === 0 ? 1 : ex;
+      const sy = b === 0 ? 1 : ey;
+      const sz = c === 0 ? 1 : ez;
+      return V(sx * a, sy * b, sz * c);
+    });
+  }
+
+  const polygons = [];
+  for (const axis of ["x", "y", "z"]) for (const sign of [1, -1]) {
+    polygons.push(squareFace(axis, sign));
+  }
+  for (const ex of [1, -1]) for (const ey of [1, -1]) for (const ez of [1, -1]) {
+    polygons.push(hexFace(ex, ey, ez));
+  }
+
+  const rawPositions = [];
+  const rawFaceIdx = [];
+  const faceNormals = [];
+  const keyOf = (p) =>
+    `${Math.round(p.x * 1e4)}_${Math.round(p.y * 1e4)}_${Math.round(p.z * 1e4)}`;
+  const faceSetByKey = new Map();
+
+  polygons.forEach((polyIn, faceIdx) => {
+    let poly = polyIn;
+    const centroid = new THREE.Vector3();
+    poly.forEach((p) => centroid.add(p));
+    centroid.divideScalar(poly.length);
+
+    const eAB = new THREE.Vector3().subVectors(poly[1], poly[0]);
+    const eAC = new THREE.Vector3().subVectors(poly[2], poly[0]);
+    const n = new THREE.Vector3().crossVectors(eAB, eAC).normalize();
+    if (n.dot(centroid) < 0) {
+      poly = poly.slice().reverse();
+      n.negate();
+    }
+    faceNormals.push(n);
+
+    for (let k = 0; k < poly.length; k++) {
+      const A = centroid;
+      const B = poly[k];
+      const C = poly[(k + 1) % poly.length];
+      const ab = new THREE.Vector3().subVectors(B, A);
+      const ac = new THREE.Vector3().subVectors(C, A);
+
+      const grid = [];
+      for (let i = 0; i <= seg; i++) {
+        grid.push([]);
+        for (let j = 0; j <= seg - i; j++) {
+          grid[i].push(new THREE.Vector3()
+            .copy(A)
+            .addScaledVector(ab, i / seg)
+            .addScaledVector(ac, j / seg));
+        }
+      }
+      const push = (p) => {
+        rawPositions.push(p);
+        rawFaceIdx.push(faceIdx);
+        const key = keyOf(p);
+        let set = faceSetByKey.get(key);
+        if (!set) { set = new Set(); faceSetByKey.set(key, set); }
+        set.add(faceIdx);
+      };
+      for (let i = 0; i < seg; i++) {
+        for (let j = 0; j < seg - i; j++) {
+          push(grid[i][j]); push(grid[i + 1][j]); push(grid[i][j + 1]);
+          if (j < seg - i - 1) {
+            push(grid[i + 1][j]); push(grid[i + 1][j + 1]); push(grid[i][j + 1]);
+          }
+        }
+      }
+    }
+  });
+
+  const positions = [];
+  const normals = [];
+  const dispDirs = [];
+  const accum = new THREE.Vector3();
+
+  rawPositions.forEach((p, idx) => {
+    const faceIdx = rawFaceIdx[idx];
+    const n = faceNormals[faceIdx];
+    positions.push(p.x, p.y, p.z);
+    normals.push(n.x, n.y, n.z);
+
+    const set = faceSetByKey.get(keyOf(p));
+    accum.set(0, 0, 0);
+    set.forEach((fi) => accum.add(faceNormals[fi]));
+    accum.normalize();
+    dispDirs.push(accum.x, accum.y, accum.z);
+  });
+
+  /* Nach Flaeche gruppieren -> eine BufferGeometry je Flaeche. Dadurch
+     kann three.js pro Flaeche Frustum-Culling machen: Flaechen ausserhalb
+     des Blickfelds werden gar nicht erst gezeichnet. Die an einer Kante
+     doppelt vorhandenen Vertices tragen in beiden Nachbar-Meshes dasselbe
+     (gemittelte) dispDir und bleiben daher nahtlos. */
+  const faceGeos = [];
+  const faceCenters = [];
+  for (let f = 0; f < polygons.length; f++) {
+    const fp = [], fn = [], fd = [];
+    for (let idx = 0; idx < rawFaceIdx.length; idx++) {
+      if (rawFaceIdx[idx] !== f) continue;
+      fp.push(positions[idx * 3], positions[idx * 3 + 1], positions[idx * 3 + 2]);
+      fn.push(normals[idx * 3], normals[idx * 3 + 1], normals[idx * 3 + 2]);
+      fd.push(dispDirs[idx * 3], dispDirs[idx * 3 + 1], dispDirs[idx * 3 + 2]);
+    }
+    const g = new THREE.BufferGeometry();
+    g.setAttribute("position", new THREE.Float32BufferAttribute(fp, 3));
+    g.setAttribute("normal", new THREE.Float32BufferAttribute(fn, 3));
+    g.setAttribute("dispDir", new THREE.Float32BufferAttribute(fd, 3));
+    g.computeBoundingSphere();
+    /* Displacement kann Vertices leicht ueber die Rohgeometrie
+       hinausschieben – Kugel etwas aufweiten, damit Frustum-Culling am
+       Rand nicht zu frueh greift */
+    g.boundingSphere.radius += 0.3;
+    faceGeos.push(g);
+    faceCenters.push(faceNormals[f].clone().multiplyScalar(
+      /* Fusspunkt der Flaechenebene: Normale * Abstand vom Ursprung */
+      polygons[f].reduce((s, v) => s + faceNormals[f].dot(v), 0) / polygons[f].length));
+  }
+
+  return { faceGeos, faceNormals, faceCenters };
+}
+
+/* ---------- Der Koerper ---------- */
+
+const rippleUniform = [];
+for (let i = 0; i < MAX_RIPPLES; i++) {
+  rippleUniform.push(new THREE.Vector4(0, 0, 0, -1));
+}
+const rippleStrength = new Array(MAX_RIPPLES).fill(0);
+
+/* Unterteilung. 38 statt 44 spart ~26 % Vertices (Vertex-Shader wertet
+   die teure Wellen-Verschiebung pro Vertex aus), bleibt aber fein genug,
+   da die Wellen-Feinstruktur ohnehin ueber die Fragment-Normale kommt:
+   72 Keile * 38^2 * ~1.5 ~ 104.000 Dreiecke (vorher ~139.000). */
+const SEG = 38;
+const { faceGeos, faceNormals, faceCenters } =
+  makeTruncatedOctahedronGeometry(TRUNC_SCALE, SEG);
+const solidMat = new THREE.ShaderMaterial({
+  vertexShader: VERTEX_SHADER,
+  fragmentShader: FRAGMENT_SHADER,
+  uniforms: THREE.UniformsUtils.merge([
+    THREE.UniformsLib.fog,
+    { uTime: { value: 0 }, uGlow: { value: 0 },
+      uBolts: { value: 1 }, uColorAll: { value: 1 },
+      uWaveAmp: { value: 0.045 }, uGeo: { value: GEO },
+      uHueShift: { value: 0 } }
+  ]),
+  fog: true,
+  side: THREE.DoubleSide,   /* im Inneren sichtbar: Blick auf die Innenwaende */
+  extensions: { derivatives: true }
+});
+/* merge() klont Vector4/Vector3-Werte nicht sauber, daher separat setzen */
+solidMat.uniforms.uRipples = { value: rippleUniform };
+solidMat.uniforms.uRippleStrength = { value: rippleStrength };
+solidMat.uniforms.uGlowAnchor = { value: new THREE.Vector3(0, 0, 0) };
+
+/* ---------- Inner-Glow-Lichter: Vorberechnung in JS ----------
+   Statt die 60 Lichter fuer JEDEN Pixel im Shader zu evaluieren (teuer:
+   je 6 sin fuer die Bahn + Puls + hue2rgb), werden sie einmal pro Frame
+   hier berechnet, nach Naehe zum Anker sortiert und nur die GLOW_SLOTS
+   naechsten als Uniform-Arrays hochgeladen. Der Shader summiert dann nur
+   noch billige exp-BloBs. Optik bleibt identisch: dieselben Bahnen,
+   Farben, Puls- und Huellkurven, nur woanders gerechnet. */
+const GLOW_SLOTS = 24;
+const GLOW_SPAWN = 1.0;
+const GLOW_LIFE = 60.0;
+const GLOW_MAX = 60;
+const GLOW_BLOB = 4.2;      /* Blob-Schaerfe (== exp(-gd^2*4.2) wie zuvor) */
+const GLOW_STRENGTH = 0.62; /* Gesamthelligkeit wie zuvor */
+const L1MAX = 3 * BASE * 0.78;
+const LINFMAX = 2 * BASE * 0.78;
+
+const lightData = new Array(GLOW_SLOTS).fill(0).map(() => new THREE.Vector4());
+const lightColor = new Array(GLOW_SLOTS).fill(0).map(() => new THREE.Vector3());
+solidMat.uniforms.uLightCount = { value: 0 };
+solidMat.uniforms.uLightData = { value: lightData };
+solidMat.uniforms.uLightColor = { value: lightColor };
+
+/* JS-Pendants der frueheren GLSL-Helfer (bit-gleiche Formeln) */
+function jsHash1(n) {
+  const s = Math.sin(n * 12.9898) * 43758.5453;
+  return s - Math.floor(s);
+}
+function jsHue2rgb(h) {
+  const f = (m) => {
+    const k = (m + h * 6) % 6;
+    return 1 - Math.min(Math.max(Math.min(k, 4 - k), 0), 1);
+  };
+  return [f(5), f(3), f(1)];
+}
+const _gc = new THREE.Vector3();
+function glowCenterJS(n, age, anchor, out) {
+  const s = n * 7.31;
+  const p1x = jsHash1(s + 1) * 6.2831853, p1y = jsHash1(s + 2) * 6.2831853, p1z = jsHash1(s + 3) * 6.2831853;
+  const p2x = jsHash1(s + 4) * 6.2831853, p2y = jsHash1(s + 5) * 6.2831853, p2z = jsHash1(s + 6) * 6.2831853;
+  let x = (Math.sin(age * 0.33 + p1x) + 0.6 * Math.sin(age * 0.19 + p2x)) * 0.55 + anchor.x;
+  let y = (Math.sin(age * 0.27 + p1y) + 0.6 * Math.sin(age * 0.23 + p2y)) * 0.55 + anchor.y;
+  let z = (Math.sin(age * 0.29 + p1z) + 0.6 * Math.sin(age * 0.13 + p2z)) * 0.55 + anchor.z;
+  const l1 = Math.abs(x) + Math.abs(y) + Math.abs(z);
+  const s1 = L1MAX / Math.max(L1MAX, l1); x *= s1; y *= s1; z *= s1;
+  const linf = Math.max(Math.abs(x), Math.abs(y), Math.abs(z));
+  const s2 = LINFMAX / Math.max(LINFMAX, linf); x *= s2; y *= s2; z *= s2;
+  return out.set(x, y, z);
+}
+
+const _cand = [];
+function updateGlowLights(t, anchor, hueShift, colorAll) {
+  _cand.length = 0;
+  const base = Math.floor(t / GLOW_SPAWN);
+  for (let j = 0; j < GLOW_MAX; j++) {
+    const n = base - j;
+    if (n < 0) continue;
+    const age = t - n * GLOW_SPAWN;
+    if (age >= GLOW_LIFE) continue;
+    glowCenterJS(n, age, anchor, _gc);
+    /* env * pulse wie im alten Shader */
+    const env = smooth01(age, 0, 1.5) * (1 - smooth01(age, 55, GLOW_LIFE));
+    if (env <= 0.0001) continue;
+    const pp = n * 2.39996;
+    const pulse = 0.80 + 0.20 * (0.7 * Math.sin(age * 1.15 + pp + 1.8 * Math.sin(age * 0.31))
+                              + 0.3 * Math.sin(age * 2.73 + pp * 1.7 + 4.0));
+    /* Farbe wie im alten Shader */
+    let r, g, b;
+    if (colorAll || (n % 5 + 5) % 5 < 0.5) {
+      const hh = ((jsHash1(n * 7.31 + 8) + hueShift) % 1 + 1) % 1;
+      const c = jsHue2rgb(hh);
+      r = c[0] * 0.85 + 0.15; g = c[1] * 0.85 + 0.15; b = c[2] * 0.85 + 0.15;
+    } else {
+      const w = 0.5 + 0.5 * Math.sin(age * 0.47 + n * 3.1 + _gc.x * 1.9 + _gc.y * 1.3);
+      r = 0.40 + w * 0.60; g = 0.60 + w * 0.38; b = 1.00 - w * 0.05;
+    }
+    const bright = env * pulse * GLOW_STRENGTH;
+    const dx = _gc.x - anchor.x, dy = _gc.y - anchor.y, dz = _gc.z - anchor.z;
+    _cand.push({
+      x: _gc.x, y: _gc.y, z: _gc.z,
+      r: r * bright, g: g * bright, b: b * bright,
+      d2: dx * dx + dy * dy + dz * dz
+    });
+  }
+  /* die naechsten GLOW_SLOTS Lichter zum Anker behalten */
+  _cand.sort((a, b) => a.d2 - b.d2);
+  const count = Math.min(GLOW_SLOTS, _cand.length);
+  for (let i = 0; i < count; i++) {
+    const c = _cand[i];
+    lightData[i].set(c.x, c.y, c.z, GLOW_BLOB);
+    lightColor[i].set(c.r, c.g, c.b);
+  }
+  solidMat.uniforms.uLightCount.value = count;
+}
+function smooth01(x, a, b) {
+  const s = Math.min(1, Math.max(0, (x - a) / (b - a)));
+  return s * s * (3 - 2 * s);
+}
+
+
+/* 14 Flaechen-Meshes, ein gemeinsames Material. Sie werden per
+   Frustum-Culling (automatisch) und einem Rueckseiten-Test (im
+   Render-Loop) aus dem Rendering genommen, wenn sie nicht im Blickfeld
+   liegen. */
+const faceMeshes = faceGeos.map((g) => new THREE.Mesh(g, solidMat));
+faceMeshes.forEach((m) => scene.add(m));
+/* "inner glow" intensity from the screensaver settings (?glow=0..1).
+   Ohne Parameter ist der Glow standardmaessig AN (1.0). */
+(function () {
+  const params = new URLSearchParams(location.search);
+  const raw = params.get("glow");
+  const v = raw === null ? 1 : parseFloat(raw);
+  solidMat.uniforms.uGlow.value = Math.min(1, Math.max(0, isNaN(v) ? 1 : v));
+  /* ?bolts=0|1 und ?colorall=0|1 setzen den Startzustand der Checkboxen.
+     Faerbung ist in dieser Szene standardmaessig AN ("stets verschiedene
+     Farben im Sichtbereich"). */
+  const bolts = params.get("bolts") !== "0";
+  const colorAll = params.get("colorall") !== "0";
+  solidMat.uniforms.uBolts.value = bolts ? 1 : 0;
+  solidMat.uniforms.uColorAll.value = colorAll ? 1 : 0;
+
+  const cbBolts = document.getElementById("cb-bolts");
+  const cbColor = document.getElementById("cb-color");
+  cbBolts.checked = bolts;
+  cbColor.checked = colorAll;
+  cbBolts.addEventListener("change", () => {
+    solidMat.uniforms.uBolts.value = cbBolts.checked ? 1 : 0;
+  });
+  cbColor.addEventListener("change", () => {
+    solidMat.uniforms.uColorAll.value = cbColor.checked ? 1 : 0;
+  });
+})();
+
+/* ---------- Innen/Aussen-Test des Koerpers ----------
+   14 Ebenen (n.p = d): 6 Quadrate (Achsennormalen, d = 2*TRUNC_SCALE) und
+   8 Sechsecke (Oktanten-Normalen (±1,±1,±1)/sqrt3, d = 3*TRUNC_SCALE/sqrt3).
+   fSharp(p) < 0  <=>  Punkt liegt innerhalb des Koerpers. Wird gebraucht,
+   um "Eintauchen"/"Austauchen" zu erkennen und das Flaechen-Culling
+   umzuschalten. */
+
+const PLANES = [];
+(function () {
+  const dSq = 2 * TRUNC_SCALE;
+  for (const a of [[1,0,0],[-1,0,0],[0,1,0],[0,-1,0],[0,0,1],[0,0,-1]]) {
+    PLANES.push({ n: new THREE.Vector3(a[0], a[1], a[2]), d: dSq });
+  }
+  const s3 = Math.sqrt(3);
+  const dHex = 3 * TRUNC_SCALE / s3;
+  for (const ex of [1,-1]) for (const ey of [1,-1]) for (const ez of [1,-1]) {
+    PLANES.push({ n: new THREE.Vector3(ex/s3, ey/s3, ez/s3), d: dHex });
+  }
+})();
+
+function fSharp(p) {
+  let m = -Infinity;
+  for (const pl of PLANES) m = Math.max(m, pl.n.dot(p) - pl.d);
+  return m;
+}
+
+/* ---------- Schleifen-Durchflug (Ereignishorizont) ----------
+   Endlose Bahn, die sich aus zwei Teilen abwechselnd zusammensetzt:
+     1. eine GERADE exakt durch den Mittelpunkt des Koerpers – Eintauchen,
+        Durchqueren, Austauchen, alles frontal auf einer Achse;
+     2. ein KREISBOGEN aussen herum, der die Achse an beiden Enden
+        tangential beruehrt und den Betrachter zur Achse des naechsten
+        Durchflugs bringt.
+   Beide Teile sind analytisch konstruiert (siehe unten) und werden als
+   Stuetzpunkte an einen Catmull-Rom-Spline uebergeben, der die Uebergaenge
+   zusaetzlich abrundet. Weil der Bogen konstante Kruemmung hat und
+   tangential anschliesst, ist die Drehrate der Kamera gleichmaessig und
+   ruhig – ohne die frueheren Kipp-Spitzen am Schleifenende. */
+
+const FLY_SPEED = 5.2;           /* Weltunits pro Sekunde */
+
+/* ---------- Radien der Bahn ----------
+   Die Aussenschleife ist ein KREISBOGEN mit konstanter Kruemmung, der die
+   Durchflugachse an beiden Enden tangential beruehrt. Seine Geometrie ist
+   durch einen einzigen Winkel PSI festgelegt: den Winkel zwischen dem
+   Austrittspunkt und dem Eintrittspunkt des naechsten Durchflugs (jeweils
+   vom Mittelpunkt aus gesehen).
+
+   Liegen Aus- und Eintrittspunkt auf dem Radius R, so ergibt sich
+   (Herleitung ueber den Kreis, der beide Punkte radial beruehrt):
+     Bogenradius        rho      = R * tan(PSI/2)
+     Bogenmittelpunkt   |O|      = R / cos(PSI/2)      (auf der Winkelhalbierenden)
+     groesster Abstand  d_max    = R * (1 + sin(PSI/2)) / cos(PSI/2)
+     Bogenlaenge                 = rho * (PI + PSI)
+   Die Richtungsaenderung betraegt immer PI + PSI: man verlaesst den Koerper
+   radial nach aussen und kommt radial nach innen zurueck.
+
+   d_max wird so gewaehlt, dass der Koerper dort formatfuellend ins Bild
+   passt – am Scheitel der Schleife blickt die Kamera genau auf ihn.
+   Daraus folgt rueckwaerts R. Bei PSI = 60 Grad ergibt das eine ruhige,
+   gleichmaessige Drehrate von rund 0.36 Grad pro Frame. */
+
+const BODY_R = 2.02 * GEO;       /* Umkreisradius des Koerpers */
+const PSI = Math.PI / 3;         /* 60 Grad */
+const FIT_MARGIN = 1.05;         /* etwas Luft zum Bildrand */
+
+let R_EXIT = 0;   /* Radius von Aus-/Eintrittspunkt (Bogenenden) */
+let ARC_RHO = 0;  /* Bogenradius */
+let ARC_OFF = 0;  /* Abstand des Bogenmittelpunkts vom Ursprung */
+
+function updateFlightRadii() {
+  const vHalf = (camera.fov * Math.PI / 180) / 2;
+  const hHalf = Math.atan(Math.tan(vHalf) * camera.aspect);
+  /* der kleinere Halbwinkel begrenzt das Bild (im Hochformat der
+     horizontale) – daran wird die Framing-Distanz bemessen */
+  const half = Math.min(vHalf, hHalf);
+  const dMax = (BODY_R / Math.sin(half)) * FIT_MARGIN;
+  const s = Math.sin(PSI / 2), c = Math.cos(PSI / 2);
+  R_EXIT = dMax * c / (1 + s);
+  /* sicher ausserhalb der Oberflaeche bleiben */
+  R_EXIT = Math.max(R_EXIT, BODY_R * 1.20);
+  ARC_RHO = R_EXIT * Math.tan(PSI / 2);
+  ARC_OFF = R_EXIT / c;
+}
+updateFlightRadii();
+
+/* ---------- Durchflugachsen ----------
+   Die Achse des naechsten Durchflugs ergibt sich aus der aktuellen:
+   der Eintrittspunkt des naechsten Durchflugs liegt genau PSI von dem
+   Austrittspunkt des aktuellen entfernt. Damit hat JEDE Schleife dieselbe
+   ruhige Form. Die Drehachse wandert pro Durchflug um den goldenen Winkel,
+   sodass die Durchfluege trotzdem immer andere Stellen des Koerpers
+   treffen und sich das Muster nie wiederholt.
+   Da sich die Achsen aufeinander beziehen, werden sie fortlaufend
+   berechnet und gespeichert (eine Achse je Durchflug, ~20 s Flug). */
+const passDirs = [new THREE.Vector3(0.35, 0.82, 0.45).normalize()];
+const _e1 = new THREE.Vector3(), _e2 = new THREE.Vector3();
+const _w = new THREE.Vector3();
+
+function passDir(n) {
+  /* Absicherung: Catmull-Rom fragt auch den Vorgaenger-Kontrollpunkt ab,
+     wodurch am Bahnanfang ein negativer Index auftreten kann. */
+  if (n < 0) n = 0;
+  while (passDirs.length <= n) {
+    const i = passDirs.length;
+    const prev = passDirs[i - 1];
+    /* orthonormale Basis senkrecht zur bisherigen Achse */
+    _e1.set(0, 0, 1);
+    if (Math.abs(prev.z) > 0.9) _e1.set(1, 0, 0);
+    _e1.addScaledVector(prev, -_e1.dot(prev)).normalize();
+    _e2.crossVectors(prev, _e1);
+    /* Drehachse waehlen: pro Durchflug um den goldenen Winkel weiter */
+    const phi = i * 2.399963;
+    _w.copy(_e1).multiplyScalar(Math.cos(phi))
+      .addScaledVector(_e2, Math.sin(phi)).normalize();
+    /* Eintrittsrichtung des naechsten Durchflugs = Austrittsrichtung,
+       um PSI gedreht; die Achse selbst ist deren Gegenrichtung */
+    const next = prev.clone().applyAxisAngle(_w, PSI).multiplyScalar(-1);
+    passDirs.push(next.normalize());
+  }
+  return passDirs[n];
+}
+
+/* ---------- Wegpunkte ----------
+   WICHTIG: Catmull-Rom parametrisiert gleichfoermig – jedes Segment
+   bekommt denselben Parameterabschnitt, unabhaengig von seiner Laenge.
+   Sind die Stuetzpunkte sehr ungleich verteilt, werden die Tangenten an
+   den kurzen Segmenten viel zu gross, die Kurve schiesst ueber und die
+   Fluggeschwindigkeit schwankt extrem. Die Stuetzpunkte werden daher
+   ueberall ungefaehr GLEICH WEIT auseinander gelegt.
+
+   Praktisch: Das Laengenverhaeltnis von Bogen zu Achse haengt nur von PSI
+   ab (beide skalieren mit R_EXIT):
+     Bogen / Achse = tan(PSI/2) * (PI + PSI) / 2 = 1.209  bei PSI = 60 Grad
+   Mit 6 Achsenabschnitten passen also 7 Bogenabschnitte – die Abstaende
+   betragen dann 0.333*R_EXIT bzw. 0.346*R_EXIT, praktisch gleich. Weil
+   das Verhaeltnis konstant ist, bleiben diese Zahlen bei jeder
+   Bildschirmgroesse gueltig.
+
+   Nummerierung je Durchflug (WPP = 13 Wegpunkte):
+     0 .. 6   auf der Achse, von -R_EXIT bis +R_EXIT (7 Punkte)
+     7 .. 12  Stuetzpunkte im Inneren des Bogens (6 Punkte)
+     danach folgt Wegpunkt 0 des naechsten Durchflugs, der exakt das
+     Bogenende ist.
+   Die Achsenpunkte sind kollinear und symmetrisch zum Ursprung; alle
+   Segmente zwischen Wegpunkt 1 und 5 sind daher exakt geradlinig und
+   fuehren exakt durch den Mittelpunkt. */
+
+const N_AXIS = 6;              /* Abschnitte auf der Achse */
+const N_ARC = 7;               /* Abschnitte auf dem Bogen */
+const WPP = N_AXIS + N_ARC;    /* 13 Wegpunkte je Durchflug */
+const _pA = new THREE.Vector3();
+const _bisec = new THREE.Vector3();
+const _O = new THREE.Vector3();
+const _a0 = new THREE.Vector3();
+const _b0 = new THREE.Vector3();
+const _nHat = new THREE.Vector3();
+
+/* Punkt auf dem Kreisbogen; theta laeuft von 0 (Austritt aus der Achse)
+   bis PI+PSI (Eintritt in die Achse des naechsten Durchflugs) */
+function arcPoint(dir, pA, theta, out) {
+  _bisec.copy(dir).add(pA).normalize();
+  _O.copy(_bisec).multiplyScalar(ARC_OFF);
+  _a0.copy(dir).multiplyScalar(R_EXIT).sub(_O).multiplyScalar(1 / ARC_RHO);
+  _nHat.crossVectors(dir, pA).normalize();
+  _b0.crossVectors(_nHat, _a0);
+  return out.copy(_O)
+    .addScaledVector(_a0, ARC_RHO * Math.cos(theta))
+    .addScaledVector(_b0, ARC_RHO * Math.sin(theta));
+}
+
+const _wpOut = new THREE.Vector3();
+function waypoint(k) {
+  const n = Math.floor(k / WPP);
+  const phase = k - n * WPP;
+  const dir = passDir(n);
+  if (phase <= N_AXIS) {
+    /* gleichmaessig auf der Achse von -R_EXIT bis +R_EXIT */
+    const f = -1 + 2 * phase / N_AXIS;
+    return dir.clone().multiplyScalar(f * R_EXIT);
+  }
+  /* Bogen-Stuetzpunkte; Eintrittsrichtung des naechsten Durchflugs */
+  _pA.copy(passDir(n + 1)).multiplyScalar(-1);
+  const theta = (Math.PI + PSI) * (phase - N_AXIS) / N_ARC;
+  return arcPoint(dir, _pA, theta, _wpOut).clone();
+}
+
+function catmull(p0, p1, p2, p3, s, out) {
+  const s2 = s * s, s3 = s2 * s;
+  out.set(0, 0, 0)
+    .addScaledVector(p1, 2)
+    .addScaledVector(p0.clone().multiplyScalar(-1).add(p2), s)
+    .addScaledVector(p0.clone().multiplyScalar(2).addScaledVector(p1, -5).addScaledVector(p2, 4).addScaledVector(p3, -1), s2)
+    .addScaledVector(p0.clone().multiplyScalar(-1).addScaledVector(p1, 3).addScaledVector(p2, -3).add(p3), s3)
+    .multiplyScalar(0.5);
+  return out;
+}
+
+/* Kontinuierlicher Bahnparameter u (in Wegpunkt-Einheiten). Position und
+   Tangente aus dem aktuellen Catmull-Rom-Segment; Geschwindigkeit ueber
+   die Segmentlaenge normiert, damit das Welttempo konstant bleibt. */
+const flight = {
+  /* Start beim Anflugpunkt des ersten Durchflugs. Nicht bei 0 beginnen:
+     Catmull-Rom wertet auch den Wegpunkt davor aus, der dort noch nicht
+     definiert waere. */
+  u: WPP,
+  P: new THREE.Vector3(),
+  F: new THREE.Vector3(0, 0, 1),
+  /* Mitgefuehrtes "Oben" des Flugkoerpers (immer senkrecht zu F) */
+  U: new THREE.Vector3(0, 1, 0),
+  /* geglaetteter Rollwinkel fuer die Kurvenlage */
+  bank: 0,
+  passIndex: 0,
+  wasInside: false
+};
+
+const _wp0 = new THREE.Vector3(), _wp1 = new THREE.Vector3();
+const _wp2 = new THREE.Vector3(), _wp3 = new THREE.Vector3();
+const _posA = new THREE.Vector3(), _posB = new THREE.Vector3();
+const _eye = new THREE.Vector3();
+const _anchorTarget = new THREE.Vector3();
+const _prevF = new THREE.Vector3();
+const _axis = new THREE.Vector3();
+const _q = new THREE.Quaternion();
+const _dF = new THREE.Vector3();
+const _right = new THREE.Vector3();
+/* Kamera-Basis */
+const _xAxis = new THREE.Vector3();
+const _yAxis = new THREE.Vector3();
+const _zAxis = new THREE.Vector3();
+const _upBank = new THREE.Vector3();
+const _qBank = new THREE.Quaternion();
+const _basis = new THREE.Matrix4();
+
+const _tanTmp = new THREE.Vector3();
+
+/* Position auf der Bahn. k (Segment) und s (Anteil im Segment) werden aus
+   dem globalen Parameter u abgeleitet. */
+function pathPos(u, out) {
+  const k = Math.floor(u);
+  const s = u - k;
+  _wp0.copy(waypoint(k - 1));
+  _wp1.copy(waypoint(k));
+  _wp2.copy(waypoint(k + 1));
+  _wp3.copy(waypoint(k + 2));
+  return catmull(_wp0, _wp1, _wp2, _wp3, s, out);
+}
+
+/* Position und Flugrichtung. Die Tangente wird als Differenz zweier
+   Auswertungen im GLOBALEN Parameter u gebildet – der Vorgriff u + eps
+   wechselt dadurch bei Bedarf sauber ins naechste Segment.
+   (Frueher wurde der Vorgriff innerhalb des Segments auf 0.999 geklemmt;
+   lag s darueber, zeigte die Differenz RUECKWAERTS und die Flugrichtung
+   kippte fuer einen Frame um 180 Grad – genau das Springen der Kamera.
+   Die Catmull-Rom-Bahn ist an Segmentgrenzen stetig differenzierbar,
+   der Vorgriff ueber die Grenze hinweg ist daher unproblematisch.) */
+function pathAt(u, outPos, outTan) {
+  pathPos(u, outPos);
+  if (outTan) {
+    pathPos(u + 1e-3, _tanTmp);
+    outTan.subVectors(_tanTmp, outPos).normalize();
+  }
+  return outPos;
+}
+
+/* Startposition/-tangente setzen und ein Start-"Oben" senkrecht dazu */
+pathAt(flight.u, flight.P, flight.F);
+(function initUp() {
+  flight.U.set(0, 1, 0);
+  if (Math.abs(flight.U.dot(flight.F)) > 0.9) flight.U.set(0, 0, 1);
+  flight.U.addScaledVector(flight.F, -flight.U.dot(flight.F)).normalize();
+})();
+
+/* ---------- Paralleltransport des Flugkoerper-Rahmens ----------
+   Das mitgefuehrte "Oben" wird bei jedem Schritt um exakt dieselbe Drehung
+   gedreht, die die alte Flugrichtung in die neue ueberfuehrt (Achse =
+   F_alt x F_neu, Winkel = Winkel zwischen beiden). Diese Drehung enthaelt
+   keinerlei Anteil um die Flugachse selbst – der Rahmen rollt also nie von
+   allein und kann auch bei senkrechtem Flug nicht umspringen (im
+   Gegensatz zu einem festen Welt-Oben, das dort entartet). Fachbegriff:
+   rotationsminimierender Rahmen. */
+function transportUp(fOld, fNew, up) {
+  _axis.crossVectors(fOld, fNew);
+  const s = _axis.length();
+  if (s > 1e-9) {
+    const c = Math.max(-1, Math.min(1, fOld.dot(fNew)));
+    _axis.multiplyScalar(1 / s);
+    _q.setFromAxisAngle(_axis, Math.atan2(s, c));
+    up.applyQuaternion(_q);
+  }
+  /* numerische Drift entfernen: exakt senkrecht zu F halten */
+  up.addScaledVector(fNew, -up.dot(fNew));
+  const l = up.length();
+  if (l > 1e-6) up.multiplyScalar(1 / l);
+}
+
+/* Kurvenlage: In Kurven legt sich der Flugkoerper leicht in die Kurve,
+   wie ein Flugzeug. BANK_MAX = 0 schaltet das ab. */
+const BANK_K = 0.55;     /* Staerke: Rollwinkel je seitlicher Drehrate */
+const BANK_MAX = 0.55;   /* Begrenzung in Radiant (~31 Grad) */
+
+function updateFlight(dt) {
+  /* Schrittweite so waehlen, dass das Welttempo ~FLY_SPEED ist:
+     lokale Segmentlaenge ~ |dP/du| aus zwei nahen Auswertungen im
+     globalen Parameter (kein Klemmen an Segmentgrenzen) */
+  pathPos(flight.u, _posA);
+  pathPos(flight.u + 0.01, _posB);
+  const speedPerU = _posA.distanceTo(_posB) / 0.01; /* Weltunits pro u */
+  /* Sicherung: sollte die lokale Parametergeschwindigkeit doch einmal
+     sehr klein werden, wuerde die Kamera in einem Frame ein grosses
+     Stueck der Bahn ueberspringen. Der Schritt wird daher begrenzt. */
+  const du = Math.min((FLY_SPEED * dt) / Math.max(speedPerU, 1e-3), 0.08);
+  flight.u += du;
+
+  _prevF.copy(flight.F);
+  pathAt(flight.u, flight.P, flight.F);
+
+  /* Rahmen mitdrehen (kein Springen, kein Eigenrollen) */
+  transportUp(_prevF, flight.F, flight.U);
+
+  /* Rollwinkel aus der seitlichen Drehrate: rechts = F x U */
+  _right.crossVectors(flight.F, flight.U).normalize();
+  _dF.subVectors(flight.F, _prevF).multiplyScalar(1 / Math.max(dt, 1e-4));
+  const lateral = _dF.dot(_right);
+  let targetBank = -lateral * BANK_K;
+  targetBank = Math.max(-BANK_MAX, Math.min(BANK_MAX, targetBank));
+  /* traege nachfuehren, damit die Lage ruhig bleibt */
+  flight.bank += (targetBank - flight.bank) * (1 - Math.pow(0.06, dt));
+
+  /* Durchflug-Zaehler: hochzaehlen, sobald wir von aussen nach innen
+     wechseln (Eintauchen) */
+  const inside = fSharp(flight.P) < 0;
+  if (inside && !flight.wasInside) {
+    flight.passIndex++;
+    onDive(flight.P.clone());
+  }
+  flight.wasInside = inside;
+  return inside;
+}
+
+/* ---------- Nebelschwaden ---------- */
+
+function makeFogTexture() {
+  const size = 256;
+  const cnv = document.createElement("canvas");
+  cnv.width = cnv.height = size;
+  const ctx = cnv.getContext("2d");
+  const g = ctx.createRadialGradient(size / 2, size / 2, 0, size / 2, size / 2, size / 2);
+  g.addColorStop(0.0, "rgba(140,146,190,0.55)");
+  g.addColorStop(0.4, "rgba(110,116,165,0.22)");
+  g.addColorStop(1.0, "rgba(90,95,140,0.0)");
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, size, size);
+  return new THREE.CanvasTexture(cnv);
+}
+
+const fogTex = makeFogTexture();
+const fogSprites = [];
+for (let i = 0; i < 14; i++) {
+  const mat = new THREE.SpriteMaterial({
+    map: fogTex,
+    transparent: true,
+    opacity: 0.05 + Math.random() * 0.07,
+    depthWrite: false
+  });
+  const s = new THREE.Sprite(mat);
+  const angle = Math.random() * Math.PI * 2;
+  const radius = (2.2 + Math.random() * 1.6) * GEO;
+  s.position.set(Math.cos(angle) * radius,
+    (-1.0 + Math.random() * 2.1) * GEO, Math.sin(angle) * radius);
+  const scale = (2.3 + Math.random() * 2.7) * GEO;
+  s.scale.set(scale, scale, 1);
+  s.userData = {
+    angle, radius,
+    speed: (Math.random() * 0.5 + 0.15) * (Math.random() < 0.5 ? -1 : 1) * 0.05,
+    bob: Math.random() * Math.PI * 2
+  };
+  fogSprites.push(s);
+  scene.add(s);
+}
+
+/* ---------- Skybox: Weltraum mit grossen, mehrfarbigen Nebeln ----------
+   Damit der Flug ausserhalb des Koerpers nicht ins Leere geht, umgibt die
+   Szene eine sehr grosse, nach innen gerichtete Kugel mit einer
+   Nebel-Textur. Die Textur wird EINMAL beim Start prozedural auf ein
+   Canvas gezeichnet (viele grosse, additiv ueberlagerte Farbverlaeufe)
+   statt per-Pixel im Shader gerechnet – im Betrieb kostet sie damit nur
+   einen Texturzugriff. Die Nebel sind bewusst sehr gross gewaehlt, sodass
+   sie die Innenseite der Skybox in alle Blickrichtungen fuellen.
+   Die Skybox folgt der Kamera (klassischer Skybox-Trick: dadurch wirken
+   die Nebel unendlich weit entfernt) und ist vom Szenennebel ausgenommen
+   (fog: false), damit sie nicht schwarz uebertuencht wird. */
+
+function makeNebulaTexture() {
+  const W = 2048, H = 1024;
+  const cnv = document.createElement("canvas");
+  cnv.width = W; cnv.height = H;
+  const ctx = cnv.getContext("2d");
+
+  /* Grundton: sehr dunkles Blauviolett statt reinem Schwarz */
+  ctx.fillStyle = "#04050e";
+  ctx.fillRect(0, 0, W, H);
+  /* additive Ueberlagerung: Farben addieren sich wie leuchtendes Gas */
+  ctx.globalCompositeOperation = "lighter";
+
+  const PAL = [
+    [255,  70, 165],  /* magenta   */
+    [ 70, 205, 255],  /* cyan      */
+    [150,  95, 255],  /* violett   */
+    [255, 145,  70],  /* orange    */
+    [ 60, 255, 195],  /* tuerkis   */
+    [ 85, 120, 255],  /* blau      */
+    [255,  95,  95]   /* rot       */
+  ];
+
+  /* weicher Farbklecks; zeichnet sich am horizontalen Rand automatisch
+     doppelt, damit die Textur nahtlos umlaeuft */
+  function blob(x, y, r, c, a) {
+    const draw = (cx) => {
+      const g = ctx.createRadialGradient(cx, y, 0, cx, y, r);
+      g.addColorStop(0.00, `rgba(${c[0]},${c[1]},${c[2]},${a})`);
+      g.addColorStop(0.35, `rgba(${c[0]},${c[1]},${c[2]},${a * 0.45})`);
+      g.addColorStop(0.70, `rgba(${c[0]},${c[1]},${c[2]},${a * 0.12})`);
+      g.addColorStop(1.00, `rgba(${c[0]},${c[1]},${c[2]},0)`);
+      ctx.fillStyle = g;
+      ctx.fillRect(cx - r, y - r, r * 2, r * 2);
+    };
+    draw(x);
+    if (x - r < 0) draw(x + W);
+    if (x + r > W) draw(x - W);
+  }
+
+  const pick = () => PAL[(Math.random() * PAL.length) | 0];
+
+  /* 1) sehr grosse Grundschleier – fuellen den Himmel flaechendeckend */
+  for (let i = 0; i < 26; i++) {
+    blob(Math.random() * W, Math.random() * H,
+      (0.30 + Math.random() * 0.30) * H, pick(), 0.13 + Math.random() * 0.12);
+  }
+  /* 2) mittlere Wolken – bringen Farbkontrast und Struktur */
+  for (let i = 0; i < 60; i++) {
+    blob(Math.random() * W, Math.random() * H,
+      (0.10 + Math.random() * 0.18) * H, pick(), 0.10 + Math.random() * 0.16);
+  }
+  /* 3) kleine, dichtere Ballungen – "Kerne" der Nebel */
+  for (let i = 0; i < 130; i++) {
+    blob(Math.random() * W, Math.random() * H,
+      (0.02 + Math.random() * 0.07) * H, pick(), 0.10 + Math.random() * 0.20);
+  }
+  /* 4) Pole zusaetzlich abdecken, damit dort keine Leere entsteht
+     (in der Kugelabbildung laufen alle x-Werte oben/unten zusammen) */
+  for (const py of [0, H]) {
+    for (let i = 0; i < 12; i++) {
+      blob(Math.random() * W, py + (Math.random() - 0.5) * H * 0.16,
+        (0.16 + Math.random() * 0.20) * H, pick(), 0.12 + Math.random() * 0.12);
+    }
+  }
+
+  /* 5) feine Sterne direkt in die Textur (die hellen, nahen Sterne kommen
+     zusaetzlich als eigenes Punktfeld dazu) */
+  ctx.globalCompositeOperation = "lighter";
+  for (let i = 0; i < 2600; i++) {
+    const x = Math.random() * W, y = Math.random() * H;
+    const a = 0.25 + Math.random() * 0.55;
+    const r = Math.random() < 0.9 ? 1.0 : 1.8;
+    ctx.fillStyle = `rgba(255,255,255,${a})`;
+    ctx.beginPath();
+    ctx.arc(x, y, r, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  const tex = new THREE.CanvasTexture(cnv);
+  /* 2048x1024 sind Zweierpotenzen -> Mipmaps und Wiederholung entlang x
+     funktionieren in WebGL1 zuverlaessig (nahtloser Umlauf) */
+  tex.wrapS = THREE.RepeatWrapping;
+  tex.needsUpdate = true;
+  return tex;
+}
+
+const SKY_R = 220;   /* < camera.far (300); die Kugel folgt der Kamera */
+const skybox = new THREE.Mesh(
+  new THREE.SphereGeometry(SKY_R, 48, 32),
+  new THREE.MeshBasicMaterial({
+    map: makeNebulaTexture(),
+    side: THREE.BackSide,   /* wir sehen die Innenseite */
+    fog: false,             /* nicht vom Szenennebel verschlucken lassen */
+    depthWrite: false       /* alles andere zeichnet darueber */
+  })
+);
+skybox.renderOrder = -1;    /* zuerst zeichnen: dient als Hintergrund */
+skybox.frustumCulled = false;
+scene.add(skybox);
+
+/* Helle Vordergrund-Sterne als eigenes Punktfeld: bleiben scharf,
+   waehrend die Textursterne mit der Kugel weichgezeichnet werden. */
+const starGeo = new THREE.BufferGeometry();
+(function initStars() {
+  const N = 1400;
+  const pos = new Float32Array(N * 3);
+  const col = new Float32Array(N * 3);
+  for (let i = 0; i < N; i++) {
+    /* gleichmaessig auf der Kugelflaeche verteilen */
+    const u = Math.random() * 2 - 1;
+    const th = Math.random() * Math.PI * 2;
+    const sr = Math.sqrt(1 - u * u);
+    const R = SKY_R * 0.94;
+    pos[i * 3 + 0] = Math.cos(th) * sr * R;
+    pos[i * 3 + 1] = u * R;
+    pos[i * 3 + 2] = Math.sin(th) * sr * R;
+    /* leichte Farbstreuung: blaeuliche bis waermliche Sterne */
+    const w = Math.random();
+    col[i * 3 + 0] = 0.75 + w * 0.25;
+    col[i * 3 + 1] = 0.80 + w * 0.15;
+    col[i * 3 + 2] = 1.00 - w * 0.15;
+  }
+  starGeo.setAttribute("position", new THREE.BufferAttribute(pos, 3));
+  starGeo.setAttribute("color", new THREE.BufferAttribute(col, 3));
+})();
+const stars = new THREE.Points(starGeo, new THREE.PointsMaterial({
+  size: 1.9, sizeAttenuation: false, transparent: true, opacity: 0.9,
+  depthWrite: false, blending: THREE.AdditiveBlending,
+  vertexColors: true, fog: false
+}));
+stars.renderOrder = -1;
+stars.frustumCulled = false;
+scene.add(stars);
+
+
+/* ---------- Plasma-Schnee im Inneren ----------
+   Dichtes Feld dreidimensionaler, kleiner runder Koerper, die traege und
+   bedaechtig umherschweben – wie sehr langsam in Wasser fallender Schnee.
+   Additiv geblendete Soft-Sprites (weicher Kern + grosser, verschwommener
+   Halo) ergeben den blauen, teils verschwimmenden Plasma-Eindruck. Das
+   Feld fuellt eine Kugel (Radius ~ Innenraum des Koerpers); faellt ein
+   Partikel unten heraus, setzt es oben wieder ein (endloser Schneefall).
+   Der leichte Neon-Farbstich pro Durchflug kommt aus PASS.tint. */
+
+function makeDropTexture() {
+  const size = 128;
+  const cnv = document.createElement("canvas");
+  cnv.width = cnv.height = size;
+  const ctx = cnv.getContext("2d");
+  const g = ctx.createRadialGradient(size / 2, size / 2, 0, size / 2, size / 2, size / 2);
+  g.addColorStop(0.0, "rgba(255,255,255,1.0)");
+  g.addColorStop(0.30, "rgba(255,255,255,0.5)");
+  g.addColorStop(1.0, "rgba(255,255,255,0.0)");
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, size, size);
+  return new THREE.CanvasTexture(cnv);
+}
+const dropTex = makeDropTexture();
+
+function hueToRgb(h) {
+  const f = (n) => {
+    const k = (n + h * 6) % 6;
+    return 1 - Math.min(Math.max(Math.min(k, 4 - k), 0), 1);
+  };
+  return [f(5), f(3), f(1)];
+}
+
+const SNOW_COUNT = 1300;
+const SNOW_R = 1.95 * GEO;         /* Radius des Schneefeldes (Innenraum) */
+const SNOW_FALL = 0.35;            /* Weltunits/s nach unten: sehr langsam */
+const snowPos = new Float32Array(SNOW_COUNT * 3);
+const snowVel = [];      /* langsame, individuelle Drift je Partikel */
+const snowPhase = [];    /* Phasen fuers traege Wabern */
+
+(function initSnow() {
+  for (let i = 0; i < SNOW_COUNT; i++) {
+    /* gleichmaessig in der Kugel verteilt */
+    let x, y, z, r2;
+    do {
+      x = (Math.random() * 2 - 1);
+      y = (Math.random() * 2 - 1);
+      z = (Math.random() * 2 - 1);
+      r2 = x * x + y * y + z * z;
+    } while (r2 > 1);
+    snowPos[i * 3 + 0] = x * SNOW_R;
+    snowPos[i * 3 + 1] = y * SNOW_R;
+    snowPos[i * 3 + 2] = z * SNOW_R;
+    snowVel.push(new THREE.Vector3(
+      (Math.random() - 0.5) * 0.10,
+      -SNOW_FALL * (0.6 + Math.random() * 0.8),
+      (Math.random() - 0.5) * 0.10));
+    snowPhase.push(Math.random() * Math.PI * 2);
+  }
+})();
+
+const snowGeo = new THREE.BufferGeometry();
+snowGeo.setAttribute("position", new THREE.BufferAttribute(snowPos, 3));
+/* Grundfarbe blaeulich; wird pro Frame leicht in Richtung PASS.tint
+   verschoben. Kern (klein, hell) + Halo (gross, weich, verschwommen). */
+const snowCore = new THREE.Points(snowGeo, new THREE.PointsMaterial({
+  map: dropTex, size: 0.34, transparent: true, opacity: 0.55,
+  depthWrite: false, blending: THREE.AdditiveBlending, sizeAttenuation: true,
+  color: new THREE.Color(0.45, 0.68, 1.0)
+}));
+const snowHalo = new THREE.Points(snowGeo, new THREE.PointsMaterial({
+  map: dropTex, size: 1.15, transparent: true, opacity: 0.16,
+  depthWrite: false, blending: THREE.AdditiveBlending, sizeAttenuation: true,
+  color: new THREE.Color(0.30, 0.55, 1.0)
+}));
+snowCore.frustumCulled = false;
+snowHalo.frustumCulled = false;
+scene.add(snowHalo);
+scene.add(snowCore);
+
+function updateSnow(dt, t) {
+  const R2 = SNOW_R * SNOW_R;
+  for (let i = 0; i < SNOW_COUNT; i++) {
+    const v = snowVel[i];
+    const ph = snowPhase[i];
+    /* traeges Wabern: sehr langsame, phasenversetzte Sinusdrift, wie in
+       zaehem Wasser sinkender Schnee */
+    snowPos[i * 3 + 0] += (v.x + 0.12 * Math.sin(t * 0.23 + ph)) * dt;
+    snowPos[i * 3 + 1] += (v.y + 0.05 * Math.sin(t * 0.17 + ph * 1.7)) * dt;
+    snowPos[i * 3 + 2] += (v.z + 0.12 * Math.cos(t * 0.19 + ph)) * dt;
+
+    /* faellt ein Partikel unten aus der Kugel, oben wieder einsetzen */
+    let x = snowPos[i * 3 + 0], y = snowPos[i * 3 + 1], z = snowPos[i * 3 + 2];
+    if (y < -SNOW_R || x * x + y * y + z * z > R2 * 1.05) {
+      const a = Math.random() * Math.PI * 2;
+      const rr = Math.sqrt(Math.random()) * SNOW_R * 0.9;
+      snowPos[i * 3 + 0] = Math.cos(a) * rr;
+      snowPos[i * 3 + 1] = SNOW_R * (0.85 + Math.random() * 0.15);
+      snowPos[i * 3 + 2] = Math.sin(a) * rr;
+    }
+  }
+  snowGeo.attributes.position.needsUpdate = true;
+
+  /* Farbe pro Durchflug leicht toenen: von Blau (Ruhe) Richtung
+     PASS.tint driften, damit der Schnee die neonfarbene Stimmung des
+     aktuellen Durchflugs mittraegt, ohne sein blaues Wesen zu verlieren */
+  snowCore.material.color.lerp(PASS.tintCore, 1 - Math.pow(0.4, dt));
+  snowHalo.material.color.lerp(PASS.tintHalo, 1 - Math.pow(0.4, dt));
+}
+
+/* ---------- Durchflug-Farbwelt ----------
+   Bei jedem Eintauchen (onDive) wird eine neue Neon-Grundstimmung
+   gewaehlt: uHueShift verschiebt alle Inner-Glow-Lichtfarben, und der
+   Plasma-Schnee wird leicht in Richtung dieser Stimmung getoent. */
+const PASS = {
+  hueShift: 0.0,
+  tintCore: new THREE.Color(0.45, 0.68, 1.0),
+  tintHalo: new THREE.Color(0.30, 0.55, 1.0)
+};
+
+function onDive(enterPoint) {
+  /* neue Grundstimmung: goldener-Winkel-Sprung => jede Runde deutlich
+     andere Palette, ohne je zu wiederholen */
+  PASS.hueShift = (PASS.hueShift + 0.61803) % 1.0;
+  solidMat.uniforms.uHueShift.value = PASS.hueShift;
+  const [r, g, b] = hueToRgb(PASS.hueShift);
+  /* Schnee bleibt ueberwiegend blau, nur leicht in Richtung Stimmung */
+  PASS.tintCore.setRGB(0.35 + r * 0.4, 0.55 + g * 0.3, 0.9 + b * 0.1);
+  PASS.tintHalo.setRGB(0.25 + r * 0.35, 0.45 + g * 0.3, 0.9 + b * 0.1);
+  /* am Eintauchpunkt einen Ripple ausloesen ("Ereignishorizont") */
+  spawnSplashAt(enterPoint, 1.0);
+}
+
+
+/* ---------- Splash-Erzeugung ---------- */
+
+const raycaster = new THREE.Raycaster();
+const ndc = new THREE.Vector2();
+let rippleIndex = 0;
+const clock = new THREE.Clock();
+
+function spawnSplashAt(worldPoint, strength) {
+  /* Meshes stehen untransformiert im Ursprung (Geometrie bereits gross
+     gebaut), daher ist der Weltpunkt zugleich die grosse Objektposition;
+     fuer den auf BASE normierten Ripple-Raum durch GEO teilen. */
+  const slot = rippleIndex % MAX_RIPPLES;
+  rippleUniform[slot].set(
+    worldPoint.x / GEO, worldPoint.y / GEO, worldPoint.z / GEO, clock.elapsedTime);
+  rippleStrength[slot] = strength;
+  rippleIndex++;
+}
+
+function spawnSplash(clientX, clientY, strength) {
+  ndc.x = (clientX / window.innerWidth) * 2 - 1;
+  ndc.y = -(clientY / window.innerHeight) * 2 + 1;
+  raycaster.setFromCamera(ndc, camera);
+  const hits = raycaster.intersectObjects(faceMeshes, false);
+  if (hits.length === 0) return;
+  spawnSplashAt(hits[0].point, strength);
+}
+
+/* ---------- Eingaben: nur Wasser aufwirbeln, KEINE Kamerasteuerung ----------
+   Ego-Perspektive: kein Zoom, keine Neigung, kein Orbit. Tippen erzeugt
+   einen Splash, Ziehen wirbelt das Wasser entlang der Spur auf. */
+
+const pointers = new Map();
+let lastStir = 0;
+const canvas = renderer.domElement;
+
+function markActive() {
+  const hint = document.getElementById("hint");
+  if (hint) hint.style.opacity = "0";
+}
+
+canvas.addEventListener("pointerdown", (e) => {
+  canvas.setPointerCapture(e.pointerId);
+  pointers.set(e.pointerId, {
+    x: e.clientX, y: e.clientY,
+    startX: e.clientX, startY: e.clientY,
+    startTime: performance.now()
+  });
+  markActive();
+});
+
+canvas.addEventListener("pointermove", (e) => {
+  const prev = pointers.get(e.pointerId);
+  if (!prev) return;
+  markActive();
+  const dx = e.clientX - prev.x;
+  const dy = e.clientY - prev.y;
+  const now = performance.now();
+  const speed = Math.hypot(dx, dy);
+  if (now - lastStir > 60 && speed > 1.5) {
+    const strength = Math.min(0.75, 0.30 + speed * 0.012);
+    spawnSplash(e.clientX, e.clientY, strength);
+    lastStir = now;
+  }
+  prev.x = e.clientX;
+  prev.y = e.clientY;
+});
+
+canvas.addEventListener("pointerup", (e) => {
+  const p = pointers.get(e.pointerId);
+  if (p) {
+    const moved = Math.hypot(e.clientX - p.startX, e.clientY - p.startY);
+    const held = performance.now() - p.startTime;
+    if (moved < 8 && held < 350) spawnSplash(e.clientX, e.clientY, 1.0);
+  }
+  pointers.delete(e.pointerId);
+});
+
+canvas.addEventListener("pointercancel", (e) => pointers.delete(e.pointerId));
+
+/* ---------- Resize ---------- */
+
+window.addEventListener("resize", () => {
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(window.innerWidth, window.innerHeight);
+  /* Framing-Distanz haengt vom Seitenverhaeltnis ab -> Bahnradien neu
+     bestimmen, damit der Koerper am Schleifenscheitel ganz im Bild bleibt */
+  updateFlightRadii();
+});
+
+/* ---------- Render-Schleife ---------- */
+
+function animate() {
+  requestAnimationFrame(animate);
+  const dt = Math.min(clock.getDelta(), 0.05);
+  const t = clock.elapsedTime;
+
+  solidMat.uniforms.uTime.value = t;
+
+  /* Seegang-Zyklus: Wellenhoehe pendelt langsam zwischen ruhig und rau */
+  const sea = Math.min(1, Math.max(0,
+    0.5 + 0.38 * Math.sin(t * 0.041 + 1.0) + 0.18 * Math.sin(t * 0.017 + 3.0)));
+  solidMat.uniforms.uWaveAmp.value = 0.02 + 0.075 * sea;
+
+  /* Durchflugbahn fortschreiben; liefert, ob die Kamera im Inneren ist */
+  const inside = updateFlight(dt);
+
+  /* Kamera exakt auf der Bahn, Blick in Flugrichtung (frontal in den
+     Ereignishorizont eintauchen). Up wird sanft stabilisiert, damit die
+     Ansicht beim Durchflug nicht ploetzlich rollt. */
+  /* Kamera exakt auf der Bahn. Die Ausrichtung kommt aus dem
+     mitgefuehrten Flugkoerper-Rahmen: Nase folgt der Kurve (F), Oberseite
+     ist das paralleltransportierte U, zusaetzlich um den Rollwinkel in
+     die Kurve gelegt. Kein lookAt mit Welt-Oben mehr -> kein Umspringen
+     bei senkrechtem Flug. */
+  camera.position.copy(flight.P);
+  /* Oben um die Flugachse rollen (Kurvenlage) */
+  _upBank.copy(flight.U).applyQuaternion(
+    _qBank.setFromAxisAngle(flight.F, flight.bank));
+  /* three.js-Kameras blicken entlang -Z, daher zAxis = -F */
+  _zAxis.copy(flight.F).multiplyScalar(-1);
+  _xAxis.crossVectors(_upBank, _zAxis).normalize();
+  _yAxis.crossVectors(_zAxis, _xAxis);
+  _basis.makeBasis(_xAxis, _yAxis, _zAxis);
+  camera.quaternion.setFromRotationMatrix(_basis);
+
+  /* Inner-Glow-Anker: im Inneren der (normierten) Kameraposition folgen,
+     damit die neonfarbenen Lichter stets rund um den Betrachter im
+     Wasser stehen; ausserhalb bleibt er im Zentrum. */
+  _anchorTarget.copy(flight.P).divideScalar(GEO);
+  const al = _anchorTarget.length();
+  if (al > 1.4) _anchorTarget.multiplyScalar(1.4 / al); /* im Inneren halten */
+  const ka = 1.0 - Math.pow(0.2, dt);
+  solidMat.uniforms.uGlowAnchor.value.lerp(_anchorTarget, ka);
+
+  /* Inner-Glow-Lichter fuer diesen Frame vorberechnen und hochladen
+     (nur die naechsten GLOW_SLOTS zum Anker) */
+  if (solidMat.uniforms.uGlow.value > 0.001) {
+    updateGlowLights(t, solidMat.uniforms.uGlowAnchor.value,
+      PASS.hueShift, solidMat.uniforms.uColorAll.value > 0.5);
+  }
+
+  /* Skybox/Sterne der Kamera nachfuehren (laesst die Nebel unendlich weit
+     erscheinen). Im Inneren des Koerpers sind sie vollstaendig vom Wasser
+     verdeckt -> abschalten spart Overdraw. */
+  skybox.position.copy(camera.position);
+  stars.position.copy(camera.position);
+  skybox.visible = !inside;
+  stars.visible = !inside;
+
+  /* Flaechen-Culling: aussen billiger Rueckseiten-Test; innen alle
+     Flaechen sichtbar lassen (man blickt auf die Innenwaende), Three
+     macht das Frustum-Culling automatisch. */
+  if (inside) {
+    for (let f = 0; f < faceMeshes.length; f++) faceMeshes[f].visible = true;
+  } else {
+    const camDir = flight.P.clone().normalize();
+    for (let f = 0; f < faceMeshes.length; f++) {
+      faceMeshes[f].visible = faceNormals[f].dot(camDir) > -0.35;
+    }
+  }
+
+  /* Plasma-Schnee im Inneren treiben lassen und pro Durchflug einfaerben */
+  updateSnow(dt, t);
+
+  for (const s of fogSprites) {
+    const u = s.userData;
+    u.angle += u.speed * dt;
+    s.position.x = Math.cos(u.angle) * u.radius;
+    s.position.z = Math.sin(u.angle) * u.radius;
+    s.position.y += Math.sin(t * 0.3 + u.bob) * 0.0006 * GEO;
+  }
+
+  renderer.render(scene, camera);
+}
+animate();
+</script>
+</body>
+</html>

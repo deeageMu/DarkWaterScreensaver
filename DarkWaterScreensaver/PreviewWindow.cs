@@ -67,6 +67,6 @@ public sealed class PreviewWindow : Window
         var scene = settings.Mode == SaverMode.Random
             ? SceneCatalog.PickRandom(new Random())
             : settings.SceneFile;
-        _webView.CoreWebView2.Navigate(SceneCatalog.GetUri(scene, saverMode: true, glow: settings.Glow).AbsoluteUri);
+        _webView.CoreWebView2.Navigate(SceneCatalog.GetUri(scene, saverMode: true, settings).AbsoluteUri);
     }
 }

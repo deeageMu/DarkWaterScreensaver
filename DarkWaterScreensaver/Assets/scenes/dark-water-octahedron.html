@@ -1,0 +1,790 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>Dunkles Wasser-Oktaeder – interaktiv</title>
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #05060c; }
+  canvas { display: block; touch-action: none; }
+  #hint {
+    position: fixed; left: 50%; bottom: 14px; transform: translateX(-50%);
+    color: #6d739c; font: 12px/1.4 system-ui, sans-serif; letter-spacing: 0.08em;
+    text-transform: uppercase; opacity: 0.7; pointer-events: none;
+    transition: opacity 1.2s ease; white-space: nowrap;
+  }
+  #panel {
+    position: fixed; top: 14px; right: 14px;
+    display: flex; flex-direction: column; gap: 8px;
+    padding: 10px 14px; border-radius: 8px;
+    background: rgba(10, 12, 24, 0.55);
+    border: 1px solid rgba(109, 115, 156, 0.25);
+    backdrop-filter: blur(4px);
+    color: #9aa0c8; font: 12px/1.4 system-ui, sans-serif;
+    letter-spacing: 0.08em; text-transform: uppercase;
+    user-select: none;
+  }
+  #panel label {
+    display: flex; align-items: center; gap: 8px; cursor: pointer;
+  }
+  #panel input[type="checkbox"] {
+    appearance: none; -webkit-appearance: none;
+    width: 15px; height: 15px; margin: 0;
+    border: 1px solid #6d739c; border-radius: 3px;
+    background: transparent; cursor: pointer; position: relative;
+  }
+  #panel input[type="checkbox"]:checked {
+    background: #4c5bd4; border-color: #7d8aff;
+  }
+  #panel input[type="checkbox"]:checked::after {
+    content: ""; position: absolute; left: 4px; top: 1px;
+    width: 4px; height: 8px;
+    border: solid #e8ebff; border-width: 0 2px 2px 0;
+    transform: rotate(45deg);
+  }
+</style>
+</head>
+<body>
+<div id="hint">Tippen: Splash &nbsp;·&nbsp; Ziehen: drehen &amp; aufwirbeln &nbsp;·&nbsp; Rad / Pinch: Zoom</div>
+<div id="panel">
+  <label><input type="checkbox" id="cb-bolts" checked> Blitze</label>
+  <label><input type="checkbox" id="cb-color"> F&auml;rbung</label>
+</div>
+<script src="vendor/three.min.js"></script>
+<script>
+/* Fallback fuer Standalone-Vorschau ohne vendor-Ordner */
+if (!window.THREE) {
+  document.write('<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"><\/script>');
+}
+</script>
+<script>
+if (new URLSearchParams(location.search).get("mode") === "saver") {
+  var hintEl = document.getElementById("hint");
+  if (hintEl) hintEl.style.display = "none";
+  var panelEl = document.getElementById("panel");
+  if (panelEl) panelEl.style.display = "none";
+  var saverCss = document.createElement("style");
+  saverCss.textContent = "* { cursor: none !important; }";
+  document.head.appendChild(saverCss);
+}
+</script>
+<script>
+"use strict";
+
+/* Form: Oktaeder (Achtflaechner) mit 8 flachen, fein unterteilten
+   Dreiecksflaechen aus dunklem Wasser. Design und Mechanik wie beim
+   interaktiven Kubus (statischer Koerper, Orbit-Kamera, Tap-Splash,
+   Drag-Aufwirbeln, Blitze, Nebel). Da Dreiecksflaechen keine brauchbaren
+   UV-Koordinaten haben, laufen Wellen, Ripples und Gischt hier ueber
+   3D-Noise im Objektraum (wie bei Sphaere und Knoten); die Blitze fegen
+   als Fronten im Weltraum ueber den Koerper.
+   Zusaetzlich: der wandernde Inner Glow aus der Knot-alive-Szene, hier als
+   Spawn-System – jede Sekunde entsteht ein neues Licht, das 60 Sekunden
+   lang UNTER der Wasseroberflaeche durch das Innere des Oktaeders treibt
+   (bis zu 60 gleichzeitig) und zwischen 60 % und 100 % Intensitaet
+   pulsiert. Jedes fuenfte Licht leuchtet in einer zufaelligen Farbe, alle
+   anderen im Blau-Weiss-Drift. */
+
+/* ---------- Renderer, Szene, Kamera ---------- */
+
+const renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: "high-performance" });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2.5)); // hochauflösend
+renderer.setSize(window.innerWidth, window.innerHeight);
+document.body.appendChild(renderer.domElement);
+
+const FOG_COLOR = 0x05060c;
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(FOG_COLOR);
+scene.fog = new THREE.FogExp2(FOG_COLOR, 0.055);
+
+const camera = new THREE.PerspectiveCamera(50, window.innerWidth / window.innerHeight, 0.1, 100);
+
+/* ---------- Gemeinsamer GLSL-Code ---------- */
+
+const MAX_RIPPLES = 20;
+
+const GLSL_COMMON = `
+  #define MAX_RIPPLES ${MAX_RIPPLES}
+  uniform float uTime;
+  /* "inner glow" intensity from the settings, 0.0 = off .. 1.0 = full */
+  uniform float uGlow;
+  /* Blitze an/aus (Checkbox): 1.0 = an, 0.0 = keine Blitze */
+  uniform float uBolts;
+  /* Faerbung (Checkbox): 1.0 = JEDES Licht hat eine Zufallsfarbe,
+     0.0 = nur jedes fuenfte, der Rest im Blau-Weiss-Drift */
+  uniform float uColorAll;
+  /* xyz = Einschlagpunkt im Objektraum, w = Startzeit (-1 = inaktiv) */
+  uniform vec4 uRipples[MAX_RIPPLES];
+  /* Staerke pro Einschlag: 1.0 = Tap-Splash, ~0.5 = Aufwirbeln beim Ziehen */
+  uniform float uRippleStrength[MAX_RIPPLES];
+
+  float hash1(float n) { return fract(sin(n * 12.9898) * 43758.5453); }
+  float hash3(vec3 p)  { return fract(sin(dot(p, vec3(127.1, 311.7, 74.7))) * 43758.5453); }
+
+  float vnoise3(vec3 p) {
+    vec3 i = floor(p);
+    vec3 f = fract(p);
+    vec3 u = f * f * (3.0 - 2.0 * f);
+    float n000 = hash3(i);
+    float n100 = hash3(i + vec3(1.0, 0.0, 0.0));
+    float n010 = hash3(i + vec3(0.0, 1.0, 0.0));
+    float n110 = hash3(i + vec3(1.0, 1.0, 0.0));
+    float n001 = hash3(i + vec3(0.0, 0.0, 1.0));
+    float n101 = hash3(i + vec3(1.0, 0.0, 1.0));
+    float n011 = hash3(i + vec3(0.0, 1.0, 1.0));
+    float n111 = hash3(i + vec3(1.0, 1.0, 1.0));
+    return mix(
+      mix(mix(n000, n100, u.x), mix(n010, n110, u.x), u.y),
+      mix(mix(n001, n101, u.x), mix(n011, n111, u.x), u.y),
+      u.z);
+  }
+
+  float fbm3(vec3 p) {
+    float v = 0.0;
+    float a = 0.5;
+    for (int i = 0; i < 4; i++) {
+      v += a * vnoise3(p);
+      p = p * 2.03 + vec3(17.3, 9.1, 4.7);
+      a *= 0.5;
+    }
+    return v;
+  }
+
+  /* Rohe Grundwellenhoehe, ca. [-1, 1]; pos = Objektraum-Position */
+  float waveRaw(vec3 pos, float t) {
+    vec3 p = pos * 3.2;
+    float h = 0.0;
+    h += sin(dot(p, normalize(vec3(0.9, 0.2, 0.4))) * 2.6 + t * 0.9) * 0.30;
+    h += sin(dot(p, normalize(vec3(-0.3, 0.8, 0.5))) * 3.4 - t * 0.7
+             + sin(dot(p, vec3(1.0, 0.0, 0.3)) + t * 0.3) * 0.6) * 0.22;
+    h += (fbm3(p * 1.6 + vec3(t * 0.25, -t * 0.20, t * 0.12)) - 0.5) * 1.05;
+    h += (fbm3(p * 4.2 + vec3(-t * 0.55, t * 0.42, -t * 0.30)) - 0.5) * 0.42;
+    return h;
+  }
+
+  /* Ripple-Hoehe durch Nutzer-Einschlaege (deutlich hoeher als Grundwellen) */
+  float rippleHeight(vec3 pos, float t) {
+    float h = 0.0;
+    for (int i = 0; i < MAX_RIPPLES; i++) {
+      vec4 rp = uRipples[i];
+      if (rp.w < 0.0) continue;
+      float age = t - rp.w;
+      if (age < 0.0 || age > 3.2) continue;
+      float s = uRippleStrength[i];
+      float r = distance(pos, rp.xyz);
+      float front = age * 0.52;
+      /* zentrale Splash-Spitze direkt nach dem Einschlag */
+      h += exp(-age * 6.0) * exp(-r * r * 175.0) * 1.6 * s;
+      /* auslaufende, gedaempfte Ringwellen */
+      float env = exp(-pow((r - front) * 4.5, 2.0));
+      h += env * exp(-age * 1.3) * cos(r * 38.0 - age * 16.0) * 1.1 * s;
+    }
+    return h * 0.055;
+  }
+
+  /* Gesamtverschiebung entlang der Normalen */
+  float totalDisp(vec3 pos, float t) {
+    return waveRaw(pos, t) * 0.045 + rippleHeight(pos, t);
+  }
+`;
+
+const VERTEX_SHADER = `
+  #include <fog_pars_vertex>
+  /* Verschiebungsrichtung pro Vertex: im Flaecheninneren die Flaechennormale,
+     auf Kanten/Ecken die gemittelte Normale der angrenzenden Flaechen.
+     Dadurch verschieben beide Flaechen ihre gemeinsamen Kantenpunkte
+     identisch – die Naht bleibt wasserdicht, es entstehen keine Spalte. */
+  attribute vec3 dispDir;
+  varying vec3 vWorldPos;
+  varying vec3 vObjPos;
+  ${GLSL_COMMON}
+  void main() {
+    vObjPos = position;
+    float h = totalDisp(position, uTime);
+    vec3 displaced = position + dispDir * h;
+    vec4 wp = modelMatrix * vec4(displaced, 1.0);
+    vWorldPos = wp.xyz;
+    vec4 mvPosition = viewMatrix * wp;
+    gl_Position = projectionMatrix * mvPosition;
+    #include <fog_vertex>
+  }
+`;
+
+const FRAGMENT_SHADER = `
+  #include <fog_pars_fragment>
+  varying vec3 vWorldPos;
+  varying vec3 vObjPos;
+  ${GLSL_COMMON}
+
+  /* Inner-Glow-Lichter werden zyklisch gespawnt: jede GLOW_SPAWN Sekunde
+     entsteht ein neues Licht, jedes lebt GLOW_LIFE Sekunden – es sind also
+     bis zu 60 gleichzeitig unterwegs. Jedes Licht n bekommt aus hash1(n)
+     eine eigene Zufallsbahn: ueberlagerte, inkommensurable Sinusbahnen.
+     Jedes fuenfte Licht (n durch 5 teilbar) leuchtet in einer zufaelligen
+     Farbe, alle anderen im gewohnten Blau-Weiss-Drift.
+     Die L1-Norm-Klammer (|x|+|y|+|z| <= 1.25) haelt jeden Lichtpunkt sicher
+     unter der Oberflaeche, denn die Oktaederflaechen liegen auf
+     |x|+|y|+|z| = 2. */
+  #define GLOW_SPAWN 1.0
+  #define GLOW_LIFE  60.0
+  #define GLOW_MAX   60
+
+  vec3 glowCenter(float n, float age) {
+    float s = n * 7.31;
+    vec3 ph1 = vec3(hash1(s + 1.0), hash1(s + 2.0), hash1(s + 3.0)) * 6.2831853;
+    vec3 ph2 = vec3(hash1(s + 4.0), hash1(s + 5.0), hash1(s + 6.0)) * 6.2831853;
+    vec3 p = vec3(
+      sin(age * 0.33 + ph1.x) + 0.6 * sin(age * 0.19 + ph2.x),
+      sin(age * 0.27 + ph1.y) + 0.6 * sin(age * 0.23 + ph2.y),
+      sin(age * 0.29 + ph1.z) + 0.6 * sin(age * 0.13 + ph2.z)
+    ) * 0.62;
+    float l1 = abs(p.x) + abs(p.y) + abs(p.z);
+    p *= 1.25 / max(1.25, l1);
+    return p;
+  }
+
+  /* Zufaelliger Farbton -> gesaettigtes RGB (Standard-Hue-Formel) */
+  vec3 hue2rgb(float h) {
+    vec3 k = mod(vec3(5.0, 3.0, 1.0) + h * 6.0, 6.0);
+    return 1.0 - clamp(min(k, 4.0 - k), 0.0, 1.0);
+  }
+
+  void main() {
+    float t = uTime;
+
+    /* Geometrische Normale aus Bildschirmableitungen */
+    vec3 dpdx = dFdx(vWorldPos);
+    vec3 dpdy = dFdy(vWorldPos);
+    vec3 N = normalize(cross(dpdx, dpdy));
+    vec3 V = normalize(cameraPosition - vWorldPos);
+    if (dot(N, V) < 0.0) N = -N;
+
+    /* Feine Normalstoerung: Gradient der Gesamtverschiebung */
+    float e = 0.008;
+    vec3 T1 = normalize(dpdx);
+    vec3 T2 = normalize(dpdy);
+    float h0 = totalDisp(vObjPos, t);
+    float g1 = (totalDisp(vObjPos + T1 * e, t) - h0) / e;
+    float g2 = (totalDisp(vObjPos + T2 * e, t) - h0) / e;
+    N = normalize(N - (T1 * g1 + T2 * g2) * 1.6);
+
+    /* Dunkles, reflektierendes Wasser */
+    float fresnel = pow(1.0 - max(dot(N, V), 0.0), 5.0);
+    vec3 deepCol = vec3(0.006, 0.012, 0.028);
+    vec3 shallowCol = vec3(0.030, 0.055, 0.105);
+    vec3 col = mix(deepCol, shallowCol, fresnel);
+
+    vec3 R = reflect(-V, N);
+    float horizon = 1.0 - clamp(abs(R.y), 0.0, 1.0);
+    col += vec3(0.055, 0.045, 0.110) * pow(horizon, 3.0) * (0.35 + 0.65 * fresnel);
+
+    vec3 L1 = normalize(vec3(0.45, 0.85, 0.25));
+    vec3 L2 = normalize(vec3(-0.60, 0.35, -0.55));
+    col += vec3(0.55, 0.62, 0.85) * pow(max(dot(R, L1), 0.0), 90.0) * 0.55;
+    col += vec3(0.35, 0.30, 0.70) * pow(max(dot(R, L2), 0.0), 60.0) * 0.30;
+
+    /* ---- Blitze: zufaellige, lila-blaue Fronten im WELTRAUM – sie fegen
+       als Entladungen ueber den ganzen Koerper und wandern dadurch ueber
+       Kanten und Flaechen hinweg ---- */
+    float boltCore = 0.0;
+    float boltGlow = 0.0;
+    if (uBolts > 0.5)
+    for (int i = 0; i < 5; i++) {
+      float fi = float(i);
+      float seed = 11.0 + fi * 13.7;
+      float per = 3.0 + hash1(seed) * 5.5;
+      float phase = hash1(seed + 1.0);
+      float cn  = floor(t / per + phase);   /* Zyklusnummer */
+      float cyc = fract(t / per + phase);
+
+      /* Zufall pro Zyklus: viele Zyklen fallen komplett aus */
+      float gate = step(0.55, hash1(seed + cn * 17.0));
+      /* zufaellige Sweep-Achse pro Zyklus (bestimmt die Laufrichtung) */
+      vec3 axis = normalize(vec3(
+        hash1(seed + cn * 29.0) - 0.5,
+        hash1(seed + cn * 31.0) - 0.5,
+        hash1(seed + cn * 37.0) - 0.5) + 0.001);
+      float window = 0.25 + 0.45 * hash1(seed + cn * 41.0);
+      float prog = cyc / window;
+      if (prog > 1.0) gate = 0.0;
+
+      /* Sweep-Koordinate: Projektion der Weltposition auf die Achse */
+      float c = dot(vWorldPos, axis);
+      float head = mix(-2.6, 2.6, clamp(prog, 0.0, 1.0));
+
+      float jag = (vnoise3(vWorldPos * 6.0 + vec3(seed + cn, t * 1.7, 0.0)) - 0.5) * 0.34
+                + (vnoise3(vWorldPos * 20.0 + vec3(0.0, seed + cn, t * 3.4)) - 0.5) * 0.13;
+
+      float d = c - (head + jag);
+      float fade = smoothstep(0.0, 0.12, prog) * (1.0 - smoothstep(0.88, 1.0, prog));
+      float flicker = 0.65 + 0.35 * vnoise3(vec3(t * 12.0, seed + cn, 3.7));
+      float segments = smoothstep(0.25, 0.55,
+        vnoise3(vWorldPos * 2.4 + vec3(seed + cn, 0.0, t * 0.9)));
+
+      float core = exp(-abs(d) * 95.0);
+      float glow = exp(-abs(d) * 10.0);
+      float wake = exp(-abs(d) * 3.2) * 0.45;
+
+      boltCore += core * 2.4 * gate * fade * flicker * segments;
+      boltGlow += (glow * 0.9 + wake) * gate * fade * flicker * (0.4 + 0.6 * segments);
+    }
+
+    vec3 glowCol = vec3(0.30, 0.18, 0.95);
+    vec3 coreCol = vec3(0.80, 0.72, 1.00);
+    float waveMod = 0.75 + 0.5 * clamp(waveRaw(vObjPos, t) * 0.5 + 0.5, 0.0, 1.0);
+    col += glowCol * boltGlow * waveMod;
+    col += coreCol * boltCore;
+
+    /* ---- Inner glow: a pulsing white/blue light drifting slowly BENEATH
+       the water surface, through the inside of the octahedron. It shines
+       through the faces, brightest where its wandering path comes close to
+       the surface; wave crests let more light pass than troughs. Same
+       breathing pulse and colour drift as in dark-water-knot-alive. ---- */
+    if (uGlow > 0.001) {
+      float facing = pow(max(dot(N, V), 0.0), 1.6);
+      float transmit = 0.70 + 0.60 * clamp(waveRaw(vObjPos, t) * 0.5 + 0.5, 0.0, 1.0);
+      /* Bei Spawn jede Sekunde und 60 s Lebenszeit sind bis zu 60 Lichter
+         gleichzeitig aktiv: die zuletzt gespawnten Zyklen j = 0 .. 59 */
+      for (int j = 0; j < GLOW_MAX; j++) {
+        float n = floor(t / GLOW_SPAWN) - float(j);
+        if (n < 0.0) continue;
+        float age = t - n * GLOW_SPAWN;
+        if (age >= GLOW_LIFE) continue;
+
+        vec3 gc = glowCenter(n, age);
+        float gd = distance(vObjPos, gc);
+        /* weit entfernte Lichter tragen nichts bei: frueh abbrechen */
+        if (gd > 1.5) continue;
+        /* engerer Lichtfleck als beim Einzellicht, damit die vielen
+           Lichter als einzelne Punkte erkennbar bleiben */
+        float blob = exp(-gd * gd * 6.0);
+        /* Lebenszeit-Huellkurve: weich einblenden, am Ende ausklingen */
+        float env = smoothstep(0.0, 1.5, age) * (1.0 - smoothstep(55.0, GLOW_LIFE, age));
+        /* irregular breathing pulse, faded strictly between 60 % and 100 %:
+           two incommensurable sines, weighted so the sum stays in [-1, 1],
+           mapped to 0.80 +/- 0.20 => range [0.6, 1.0] */
+        float pp = n * 2.39996;
+        float pulse = 0.80 + 0.20 * (0.7 * sin(age * 1.15 + pp + 1.8 * sin(age * 0.31))
+                                   + 0.3 * sin(age * 2.73 + pp * 1.7 + 4.0));
+        /* Farbe: bei aktivierter "Faerbung" hat JEDES Licht einen festen,
+           zufaelligen Farbton; sonst nur jedes 5. Licht (n durch 5 teilbar),
+           alle anderen den Blau-Weiss-Drift */
+        vec3 innerCol;
+        if (uColorAll > 0.5 || mod(n, 5.0) < 0.5) {
+          vec3 hue = hue2rgb(hash1(n * 7.31 + 8.0));
+          innerCol = mix(hue, vec3(1.0), 0.15); /* leicht entschaerft */
+        } else {
+          float w = 0.5 + 0.5 * sin(age * 0.47 + n * 3.1 + gc.x * 1.9 + gc.y * 1.3);
+          innerCol = mix(vec3(0.40, 0.60, 1.00), vec3(1.00, 0.98, 0.95), w);
+        }
+        /* Intensitaet pro Licht gedrosselt (0.45 statt 0.9), da sich viele
+           Lichter additiv ueberlagern */
+        col += innerCol * blob * (0.35 + 0.65 * facing) * env * pulse * transmit * 0.45 * uGlow;
+      }
+    }
+
+    /* ---- Gischt: Wellenkaemme + Blitze + Splashes ---- */
+    float raw = waveRaw(vObjPos, t);
+    float sprayNoise = fbm3(vObjPos * 22.0 + vec3(t * 0.9, -t * 0.7, t * 0.5));
+    float crest = smoothstep(0.55, 0.95, raw * 0.9 + sprayNoise * 0.55);
+    float speckle = smoothstep(0.62, 0.92,
+      vnoise3(vObjPos * 85.0 + vec3(t * 2.0, t * 1.3, -t * 1.1)));
+    float spray = crest * (0.35 + 0.65 * speckle);
+    spray += clamp(boltGlow, 0.0, 1.0) * speckle * 0.5;
+
+    /* Spritzendes Wasser an den Einschlagstellen */
+    float splashSpray = 0.0;
+    float splashFlash = 0.0;
+    for (int i = 0; i < MAX_RIPPLES; i++) {
+      vec4 rp = uRipples[i];
+      if (rp.w < 0.0) continue;
+      float age = t - rp.w;
+      if (age < 0.0 || age > 3.2) continue;
+      float s = uRippleStrength[i];
+      float r = distance(vObjPos, rp.xyz);
+      float front = age * 0.52;
+      /* Gischtring, der mit der Wellenfront nach aussen laeuft */
+      splashSpray += exp(-age * 1.8) * exp(-pow((r - front) * 6.5, 2.0)) * s;
+      /* hochspritzende Tropfen rund ums Zentrum, kurz nach dem Einschlag */
+      float drops = smoothstep(0.5, 0.9,
+        vnoise3(vObjPos * 120.0 + vec3(rp.w * 37.0, age * 6.0, 0.0)));
+      splashSpray += exp(-age * 3.5) * exp(-r * r * 65.0) * drops * 1.6 * s;
+      /* kurzes, kaltes Aufleuchten des Wassers im Zentrum */
+      splashFlash += exp(-age * 4.5) * exp(-r * r * 80.0) * s;
+    }
+    spray += splashSpray * (0.5 + 0.5 * speckle);
+    col += vec3(0.35, 0.42, 0.75) * splashFlash * 0.5;
+
+    col = mix(col, vec3(0.42, 0.47, 0.58), clamp(spray, 0.0, 1.0) * 0.8);
+
+    gl_FragColor = vec4(col, 1.0);
+    #include <fog_fragment>
+  }
+`;
+
+/* ---------- Oktaeder-Geometrie mit flachen, unterteilten Flaechen ----------
+   THREE.OctahedronGeometry projiziert bei detail > 0 alle Vertices auf eine
+   Kugel und ergaebe eine Sphaere. Daher manuell: 8 flache Dreiecksflaechen,
+   jede baryzentrisch in ein feines Gitter unterteilt. Fuer die
+   Wellenverschiebung traegt jeder Vertex ein dispDir-Attribut: im
+   Flaecheninneren die Flaechennormale, auf Kanten und Ecken die gemittelte
+   Normale der angrenzenden Flaechen – so bleiben die Naehte unter
+   Verschiebung geschlossen (keine Spalte an den Kanten). */
+
+function makeOctahedronGeometry(radius, seg) {
+  const V = [
+    new THREE.Vector3( radius, 0, 0), new THREE.Vector3(-radius, 0, 0),
+    new THREE.Vector3(0,  radius, 0), new THREE.Vector3(0, -radius, 0),
+    new THREE.Vector3(0, 0,  radius), new THREE.Vector3(0, 0, -radius)
+  ];
+  /* Eckenreihenfolge so gewaehlt, dass alle Normalen nach aussen zeigen */
+  const F = [
+    [0, 2, 4], [2, 1, 4], [1, 3, 4], [3, 0, 4],
+    [2, 0, 5], [1, 2, 5], [3, 1, 5], [0, 3, 5]
+  ];
+  const positions = [];
+  const normals = [];
+  const dispDirs = [];
+  const ab = new THREE.Vector3();
+  const ac = new THREE.Vector3();
+  const n = new THREE.Vector3();
+
+  /* Verschiebungsrichtung fuer einen Oberflaechenpunkt: die normierte
+     Summe der Normalen aller Flaechen, die den Punkt enthalten. Beim
+     Oktaeder analytisch loesbar: Die Flaechennormalen sind
+     (+-1, +-1, +-1)/sqrt(3) je Oktant. Ein Punkt mit Koordinate 0 liegt
+     auf einer Kante (bzw. mit zwei Nullen auf einer Ecke) und gehoert zu
+     allen Flaechen beider Vorzeichen dieser Koordinate – in der Summe
+     hebt sich die Komponente weg. Ergebnis:
+       Flaecheninneres -> (sgn x, sgn y, sgn z)/sqrt(3)  (Flaechennormale)
+       Kante           -> zwei Komponenten, normiert     (Mittel 2er Flaechen)
+       Ecke            -> Achsenrichtung                 (Mittel 4er Flaechen)
+     Die Nullen sind exakt, da die Gitterpunkte aus Basisvertices mit
+     exakten Null-Koordinaten linear kombiniert werden; eps nur zur
+     Sicherheit gegen Gleitkommarauschen. */
+  const eps = radius * 1e-6;
+  const sgn0 = (v) => (Math.abs(v) < eps ? 0 : Math.sign(v));
+  function pushDispDir(p) {
+    let dx = sgn0(p.x), dy = sgn0(p.y), dz = sgn0(p.z);
+    const len = Math.sqrt(dx * dx + dy * dy + dz * dz); /* 1, sqrt2 oder sqrt3 */
+    dispDirs.push(dx / len, dy / len, dz / len);
+  }
+
+  for (const [ia, ib, ic] of F) {
+    const A = V[ia], B = V[ib], C = V[ic];
+    ab.subVectors(B, A);
+    ac.subVectors(C, A);
+    n.crossVectors(ab, ac).normalize();
+
+    /* Gitterpunkte P(i,j) = A + (B-A)*i/seg + (C-A)*j/seg mit i+j <= seg */
+    const grid = [];
+    for (let i = 0; i <= seg; i++) {
+      grid.push([]);
+      for (let j = 0; j <= seg - i; j++) {
+        grid[i].push(new THREE.Vector3()
+          .copy(A)
+          .addScaledVector(ab, i / seg)
+          .addScaledVector(ac, j / seg));
+      }
+    }
+    const push = (p) => {
+      positions.push(p.x, p.y, p.z);
+      normals.push(n.x, n.y, n.z);
+      pushDispDir(p);
+    };
+    for (let i = 0; i < seg; i++) {
+      for (let j = 0; j < seg - i; j++) {
+        push(grid[i][j]); push(grid[i + 1][j]); push(grid[i][j + 1]);
+        if (j < seg - i - 1) {
+          push(grid[i + 1][j]); push(grid[i + 1][j + 1]); push(grid[i][j + 1]);
+        }
+      }
+    }
+  }
+
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
+  geo.setAttribute("normal", new THREE.Float32BufferAttribute(normals, 3));
+  geo.setAttribute("dispDir", new THREE.Float32BufferAttribute(dispDirs, 3));
+  return geo;
+}
+
+/* ---------- Das Oktaeder ---------- */
+
+const rippleUniform = [];
+for (let i = 0; i < MAX_RIPPLES; i++) {
+  rippleUniform.push(new THREE.Vector4(0, 0, 0, -1));
+}
+const rippleStrength = new Array(MAX_RIPPLES).fill(0);
+
+const OCTA_RADIUS = 2.0;
+const SEG = 110;
+const octaGeo = makeOctahedronGeometry(OCTA_RADIUS, SEG);
+const octaMat = new THREE.ShaderMaterial({
+  vertexShader: VERTEX_SHADER,
+  fragmentShader: FRAGMENT_SHADER,
+  uniforms: THREE.UniformsUtils.merge([
+    THREE.UniformsLib.fog,
+    { uTime: { value: 0 }, uGlow: { value: 0 },
+      uBolts: { value: 1 }, uColorAll: { value: 0 } }
+  ]),
+  fog: true,
+  extensions: { derivatives: true }
+});
+/* merge() klont Vector4-Arrays nicht sauber, daher separat setzen */
+octaMat.uniforms.uRipples = { value: rippleUniform };
+octaMat.uniforms.uRippleStrength = { value: rippleStrength };
+/* "inner glow" intensity from the screensaver settings (?glow=0..1).
+   Ohne Parameter ist der Glow in dieser Szene standardmaessig AN (1.0),
+   da das wandernde Licht ihr zentrales Gestaltungsmerkmal ist. */
+(function () {
+  const params = new URLSearchParams(location.search);
+  const raw = params.get("glow");
+  const v = raw === null ? 1 : parseFloat(raw);
+  octaMat.uniforms.uGlow.value = Math.min(1, Math.max(0, isNaN(v) ? 1 : v));
+  /* ?bolts=0|1 und ?colorall=0|1 setzen den Startzustand der Checkboxen
+     (fuer den Screensaver-Host, der keine UI zeigt) */
+  const bolts = params.get("bolts") !== "0";
+  const colorAll = params.get("colorall") === "1";
+  octaMat.uniforms.uBolts.value = bolts ? 1 : 0;
+  octaMat.uniforms.uColorAll.value = colorAll ? 1 : 0;
+
+  const cbBolts = document.getElementById("cb-bolts");
+  const cbColor = document.getElementById("cb-color");
+  cbBolts.checked = bolts;
+  cbColor.checked = colorAll;
+  cbBolts.addEventListener("change", () => {
+    octaMat.uniforms.uBolts.value = cbBolts.checked ? 1 : 0;
+  });
+  cbColor.addEventListener("change", () => {
+    octaMat.uniforms.uColorAll.value = cbColor.checked ? 1 : 0;
+  });
+})();
+const octa = new THREE.Mesh(octaGeo, octaMat);
+scene.add(octa);
+
+/* ---------- Nebelschwaden ---------- */
+
+function makeFogTexture() {
+  const size = 256;
+  const cnv = document.createElement("canvas");
+  cnv.width = cnv.height = size;
+  const ctx = cnv.getContext("2d");
+  const g = ctx.createRadialGradient(size / 2, size / 2, 0, size / 2, size / 2, size / 2);
+  g.addColorStop(0.0, "rgba(140,146,190,0.55)");
+  g.addColorStop(0.4, "rgba(110,116,165,0.22)");
+  g.addColorStop(1.0, "rgba(90,95,140,0.0)");
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, size, size);
+  return new THREE.CanvasTexture(cnv);
+}
+
+const fogTex = makeFogTexture();
+const fogSprites = [];
+for (let i = 0; i < 14; i++) {
+  const mat = new THREE.SpriteMaterial({
+    map: fogTex,
+    transparent: true,
+    opacity: 0.05 + Math.random() * 0.07,
+    depthWrite: false
+  });
+  const s = new THREE.Sprite(mat);
+  const angle = Math.random() * Math.PI * 2;
+  const radius = 1.9 + Math.random() * 1.7;
+  s.position.set(Math.cos(angle) * radius, -1.0 + Math.random() * 2.1, Math.sin(angle) * radius);
+  const scale = 2.3 + Math.random() * 2.7;
+  s.scale.set(scale, scale, 1);
+  s.userData = {
+    angle, radius,
+    speed: (Math.random() * 0.5 + 0.15) * (Math.random() < 0.5 ? -1 : 1) * 0.05,
+    bob: Math.random() * Math.PI * 2
+  };
+  fogSprites.push(s);
+  scene.add(s);
+}
+
+/* ---------- Splash-Erzeugung per Raycast ---------- */
+
+const raycaster = new THREE.Raycaster();
+const ndc = new THREE.Vector2();
+let rippleIndex = 0;
+const clock = new THREE.Clock();
+
+function spawnSplash(clientX, clientY, strength) {
+  ndc.x = (clientX / window.innerWidth) * 2 - 1;
+  ndc.y = -(clientY / window.innerHeight) * 2 + 1;
+  raycaster.setFromCamera(ndc, camera);
+  const hits = raycaster.intersectObject(octa);
+  if (hits.length === 0) return;
+  /* Welt-Trefferpunkt in den Objektraum umrechnen – der Ripple wird als
+     3D-Punkt gespeichert und wirkt auch ueber Kanten hinweg auf
+     benachbarte Flaechen */
+  const local = octa.worldToLocal(hits[0].point.clone());
+  const slot = rippleIndex % MAX_RIPPLES;
+  rippleUniform[slot].set(local.x, local.y, local.z, clock.elapsedTime);
+  rippleStrength[slot] = strength;
+  rippleIndex++;
+}
+
+/* ---------- Orbit-Steuerung + Tap-Erkennung ---------- */
+
+const controls = {
+  theta: 0.7, phi: 1.15, radius: 5.4,
+  targetTheta: 0.7, targetPhi: 1.15, targetRadius: 5.4,
+  minRadius: 2.8, maxRadius: 12.0,
+  idleTime: 0
+};
+
+const pointers = new Map();
+let pinchStartDist = 0;
+let pinchStartRadius = 0;
+let lastStir = 0;
+const canvas = renderer.domElement;
+
+function markActive() {
+  controls.idleTime = 0;
+  const hint = document.getElementById("hint");
+  if (hint) hint.style.opacity = "0";
+}
+
+canvas.addEventListener("pointerdown", (e) => {
+  canvas.setPointerCapture(e.pointerId);
+  pointers.set(e.pointerId, {
+    x: e.clientX, y: e.clientY,
+    startX: e.clientX, startY: e.clientY,
+    startTime: performance.now()
+  });
+  if (pointers.size === 2) {
+    const [a, b] = [...pointers.values()];
+    pinchStartDist = Math.hypot(a.x - b.x, a.y - b.y);
+    pinchStartRadius = controls.targetRadius;
+  }
+  markActive();
+});
+
+canvas.addEventListener("pointermove", (e) => {
+  const prev = pointers.get(e.pointerId);
+  if (!prev) return;
+  markActive();
+  if (pointers.size === 1) {
+    const dx = e.clientX - prev.x;
+    const dy = e.clientY - prev.y;
+    /* Kein Pol-Anschlag: die Kamera rotiert ueber Zenit/Nadir hinweg weiter.
+       Auf der kopfueber-Haelfte der Bahn (sin(phi) < 0) wird die
+       Horizontalrichtung gespiegelt, damit der Drag natuerlich bleibt. */
+    const upFlip = Math.sin(controls.phi) < 0 ? -1 : 1;
+    controls.targetTheta -= dx * 0.005 * upFlip;
+    controls.targetPhi -= dy * 0.005;
+
+    /* Finger/Maus wirbelt das Wasser waehrend des Drehens auf:
+       gedrosselte Kielwasser-Wellen entlang der Beruehrungsspur,
+       Staerke waechst mit der Bewegungsgeschwindigkeit */
+    const now = performance.now();
+    const speed = Math.hypot(dx, dy);
+    if (now - lastStir > 60 && speed > 1.5) {
+      const strength = Math.min(0.75, 0.30 + speed * 0.012);
+      spawnSplash(e.clientX, e.clientY, strength);
+      lastStir = now;
+    }
+  }
+  prev.x = e.clientX;
+  prev.y = e.clientY;
+  if (pointers.size === 2) {
+    const [a, b] = [...pointers.values()];
+    const dist = Math.hypot(a.x - b.x, a.y - b.y);
+    if (pinchStartDist > 0) {
+      const r = pinchStartRadius * (pinchStartDist / dist);
+      controls.targetRadius = Math.min(controls.maxRadius, Math.max(controls.minRadius, r));
+    }
+  }
+});
+
+canvas.addEventListener("pointerup", (e) => {
+  const p = pointers.get(e.pointerId);
+  if (p && pointers.size === 1) {
+    const moved = Math.hypot(e.clientX - p.startX, e.clientY - p.startY);
+    const held = performance.now() - p.startTime;
+    /* Kurzes Tippen/Klicken ohne Ziehen => Splash */
+    if (moved < 8 && held < 350) spawnSplash(e.clientX, e.clientY, 1.0);
+  }
+  pointers.delete(e.pointerId);
+  if (pointers.size < 2) pinchStartDist = 0;
+});
+
+canvas.addEventListener("pointercancel", (e) => {
+  pointers.delete(e.pointerId);
+  if (pointers.size < 2) pinchStartDist = 0;
+});
+
+canvas.addEventListener("wheel", (e) => {
+  e.preventDefault();
+  markActive();
+  const r = controls.targetRadius * Math.exp(e.deltaY * 0.001);
+  controls.targetRadius = Math.min(controls.maxRadius, Math.max(controls.minRadius, r));
+}, { passive: false });
+
+/* ---------- Resize ---------- */
+
+window.addEventListener("resize", () => {
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(window.innerWidth, window.innerHeight);
+});
+
+/* ---------- Render-Schleife ---------- */
+
+function animate() {
+  requestAnimationFrame(animate);
+  const dt = Math.min(clock.getDelta(), 0.05);
+  const t = clock.elapsedTime;
+
+  octaMat.uniforms.uTime.value = t;
+
+  const k = 1.0 - Math.pow(0.0001, dt);
+  controls.theta += (controls.targetTheta - controls.theta) * k;
+  controls.phi += (controls.targetPhi - controls.phi) * k;
+  controls.radius += (controls.targetRadius - controls.radius) * k;
+
+  controls.idleTime += dt;
+  if (controls.idleTime > 3) controls.targetTheta += dt * 0.05;
+
+  camera.position.set(
+    controls.radius * Math.sin(controls.phi) * Math.sin(controls.theta),
+    controls.radius * Math.cos(controls.phi),
+    controls.radius * Math.sin(controls.phi) * Math.cos(controls.theta)
+  );
+  camera.up.set(0, Math.sin(controls.phi) >= 0 ? 1 : -1, 0);
+  camera.lookAt(0, window.FILL_LOOK_Y || 0, 0);
+
+  for (const s of fogSprites) {
+    const u = s.userData;
+    u.angle += u.speed * dt;
+    s.position.x = Math.cos(u.angle) * u.radius;
+    s.position.z = Math.sin(u.angle) * u.radius;
+    s.position.y += Math.sin(t * 0.3 + u.bob) * 0.0006;
+  }
+
+  renderer.render(scene, camera);
+}
+animate();
+</script>
+<script>
+/* Screensaver-Anpassung: Objekt bildschirmfuellend skalieren.
+   Querformat: vertikal fuellend, Hochformat: horizontal fuellend. */
+(function () {
+  var FILL_RADIUS = 1.6; /* wirksamer Objektradius dieser Szene */
+  window.FILL_LOOK_Y = -0.22;
+  function applyFill() {
+    var vHalf = (camera.fov * Math.PI / 180) / 2;
+    var hHalf = Math.atan(Math.tan(vHalf) * (window.innerWidth / window.innerHeight));
+    var d = FILL_RADIUS / Math.sin(Math.min(vHalf, hHalf));
+    controls.minRadius = Math.min(controls.minRadius, d);
+    controls.maxRadius = Math.max(controls.maxRadius, d);
+    controls.radius = controls.targetRadius = d;
+  }
+  applyFill();
+  window.addEventListener("resize", applyFill);
+})();
+</script>
+</body>
+</html>

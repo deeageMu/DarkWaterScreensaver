@@ -24,7 +24,22 @@
 
         <CheckBox x:Name="GlowCheckBox"
                   Content="Glow (inneres Leuchten)"
-                  Margin="0,0,0,16" />
+                  Margin="0,0,0,12" />
+
+        <TextBlock x:Name="EffectsHeader" Text="Effekte" FontWeight="Bold" Margin="0,0,0,8" />
+        <StackPanel x:Name="EffectsPanel" Margin="8,0,0,16">
+            <CheckBox x:Name="BoltsCheckBox"
+                      Content="Blitze"
+                      Margin="0,2,0,2" />
+            <CheckBox x:Name="ColorCheckBox"
+                      Content="Färbung (jedes Licht eine Zufallsfarbe)"
+                      Margin="0,2,0,2" />
+            <TextBlock x:Name="EffectsHint"
+                       Text="Nur für Oktaeder-, Schwebeflug- und Durchflug-Szenen."
+                       FontSize="11" Opacity="0.6" Margin="0,4,0,0"
+                       TextWrapping="Wrap" MaxWidth="280"
+                       HorizontalAlignment="Left" />
+        </StackPanel>
 
         <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
             <Button Content="OK" Width="80" Margin="0,0,8,0" IsDefault="True" Click="OnOk" />

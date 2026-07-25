@@ -1,0 +1,1223 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>Dunkles Wasser – Schwebeflug über das abgestumpfte Oktaeder</title>
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #05060c; }
+  canvas { display: block; touch-action: none; }
+  #hint {
+    position: fixed; left: 50%; bottom: 14px; transform: translateX(-50%);
+    color: #6d739c; font: 12px/1.4 system-ui, sans-serif; letter-spacing: 0.08em;
+    text-transform: uppercase; opacity: 0.7; pointer-events: none;
+    transition: opacity 1.2s ease; white-space: nowrap;
+  }
+  #panel {
+    position: fixed; top: 14px; right: 14px;
+    display: flex; flex-direction: column; gap: 8px;
+    padding: 10px 14px; border-radius: 8px;
+    background: rgba(10, 12, 24, 0.55);
+    border: 1px solid rgba(109, 115, 156, 0.25);
+    backdrop-filter: blur(4px);
+    color: #9aa0c8; font: 12px/1.4 system-ui, sans-serif;
+    letter-spacing: 0.08em; text-transform: uppercase;
+    user-select: none;
+  }
+  #panel label {
+    display: flex; align-items: center; gap: 8px; cursor: pointer;
+  }
+  #panel input[type="checkbox"] {
+    appearance: none; -webkit-appearance: none;
+    width: 15px; height: 15px; margin: 0;
+    border: 1px solid #6d739c; border-radius: 3px;
+    background: transparent; cursor: pointer; position: relative;
+  }
+  #panel input[type="checkbox"]:checked {
+    background: #4c5bd4; border-color: #7d8aff;
+  }
+  #panel input[type="checkbox"]:checked::after {
+    content: ""; position: absolute; left: 4px; top: 1px;
+    width: 4px; height: 8px;
+    border: solid #e8ebff; border-width: 0 2px 2px 0;
+    transform: rotate(45deg);
+  }
+  /* Ebene fuer "Gischt ins Gesicht": glimmende Tropfen-Splats auf dem
+     Bildschirm, additiv wirkend durch weisse Kerne + Farbhalo (Fake-Bloom) */
+  #splat {
+    position: fixed; inset: 0; pointer-events: none; overflow: hidden;
+    mix-blend-mode: screen;
+  }
+  #splat .drop {
+    position: absolute; border-radius: 50%;
+    filter: blur(2px);
+    will-change: opacity, transform;
+  }
+</style>
+</head>
+<body>
+<div id="hint">Tippen / Ziehen: Wasser aufwirbeln</div>
+<div id="panel">
+  <label><input type="checkbox" id="cb-bolts" checked> Blitze</label>
+  <label><input type="checkbox" id="cb-color" checked> F&auml;rbung</label>
+</div>
+<div id="splat"></div>
+<script src="vendor/three.min.js"></script>
+<script>
+/* Fallback fuer Standalone-Vorschau ohne vendor-Ordner */
+if (!window.THREE) {
+  document.write('<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"><\/script>');
+}
+</script>
+<script>
+if (new URLSearchParams(location.search).get("mode") === "saver") {
+  var hintEl = document.getElementById("hint");
+  if (hintEl) hintEl.style.display = "none";
+  var panelEl = document.getElementById("panel");
+  if (panelEl) panelEl.style.display = "none";
+  var saverCss = document.createElement("style");
+  saverCss.textContent = "* { cursor: none !important; }";
+  document.head.appendChild(saverCss);
+}
+</script>
+<script>
+"use strict";
+
+/* Szenario: Ego-Perspektive. Der Betrachter schwebt langsam und knapp
+   ueber der dunklen Wasseroberflaeche der Flaechen eines abgestumpften
+   Oktaeders (6 Quadrate + 8 Sechsecke, gleiche Geometrie und derselbe
+   Shader wie dark-water-truncated-octahedron.html, inkl. nahtlosem
+   dispDir-Displacement nach seamless-face-displacement.md, Weg A).
+
+   Schwebeflug-Mechanik: Der Koerper erhaelt eine GEGLAETTETE Huelle -
+   das harte Maximum der 14 Flaechenebenen-Funktionen wird durch ein
+   Smooth-Maximum ersetzt: f_s(p) = k * ln( Sum_i e^{(n_i.p - d_i)/k} ).
+   Diese Huelle rundet jede Kante mit Radius ~k ab. Die Kamera gleitet
+   mit konstanter Geschwindigkeit auf dieser runden Huelle entlang; ihre
+   "oben"-Richtung ist die Normale der Huelle. Im Flaecheninneren ist das
+   exakt die Flaechennormale (gerader Flug), in der Kantenzone blendet
+   die Normale stetig zur Naechsten ueber - die Ansicht kippt dadurch von
+   selbst LANGSAM ueber die Kante hinunter auf die naechste Flaeche.
+   Keine Nutzerkontrolle ueber Kamera: kein Zoom, keine Neigung. Eine
+   leichte Neigung nach unten ist Standard, damit die Wasseroberflaeche
+   gut sichtbar ist. Tippen/Ziehen wirbelt weiterhin das Wasser auf.
+
+   Weitere Szenario-Merkmale:
+   - Gischt ins Gesicht: In unregelmaessigen Abstaenden schiesst ein
+     Gischtschwall vom Wasser vor der Kamera hoch und fliegt an ihr
+     vorbei. Die Tropfen gluehen von innen (additiv geblendete
+     Soft-Sprites = Fake-"Unreal Bloom"; echtes Bloom-Postprocessing ist
+     in vendor/three.min.js nicht enthalten). Treffen Tropfen die Kamera,
+     erscheinen kurz gluehende Splats auf dem Bildschirm (#splat-Ebene,
+     mix-blend-mode: screen).
+   - Inner Glow verstaerkt: hoehere Intensitaet, groessere Lichtflecken,
+     und die Lichter werden ueber einen mitwandernden Anker (uGlowAnchor,
+     ein Punkt unter der Oberflaeche vor der Kamera) stets im Sichtbereich
+     des Betrachters gehalten. Standard: Faerbung AN (jedes Licht eine
+     eigene Zufallsfarbe).
+   - Blitze plastischer: sie heben zusaetzlich einen realen Wasserruecken
+     an (Blitz-Grat fliesst in totalDisp ein => echte Parallaxe und
+     korrekte Wellen-Schattierung), Kern heisser und schaerfer.
+   - Wellenhoehe variiert: uWaveAmp wird in JS als langsamer Seegang-
+     Zyklus zwischen ruhig und rau animiert. */
+
+/* ---------- Renderer, Szene, Kamera ---------- */
+
+const renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: "high-performance" });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2.5)); // hochauflösend
+renderer.setSize(window.innerWidth, window.innerHeight);
+document.body.appendChild(renderer.domElement);
+
+const FOG_COLOR = 0x05060c;
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(FOG_COLOR);
+scene.fog = new THREE.FogExp2(FOG_COLOR, 0.055);
+
+/* Nahe Ebene klein: die Kamera ist dicht ueber dem Wasser. Ferne Ebene
+   gross und Fog duenner, damit der weit entfernte Rand der grossen
+   Flaeche als dunstiger Horizont sichtbar bleibt. */
+const camera = new THREE.PerspectiveCamera(55, window.innerWidth / window.innerHeight, 0.04, 300);
+scene.fog.density = 0.026;
+
+/* Massstab. BASE ist der normierte Objektraum-Radius (wie in den
+   Orbit-Szenen); GEO vergroessert den Koerper im Weltraum um diesen
+   Faktor. Da der Shader intern mit auf BASE normierten Koordinaten
+   rechnet (position / uGeo), bleiben Wellenlaenge, Wellenhoehe,
+   Ripplegroesse und Blitze in ABSOLUTEN Einheiten konstant – nur die
+   Flaeche wird viel groesser. Zusammen mit der konstanten, kleinen
+   Schwebehoehe (HOVER) entsteht dadurch der Eindruck, auf einen weit
+   entfernten Horizont zuzuschweben (Augenhoehe / Flaechenbreite wird
+   winzig, die Kante rueckt weit weg). */
+const BASE = 0.9;
+const GEO = 9.0;
+const TRUNC_SCALE = BASE * GEO;
+
+/* ---------- Gemeinsamer GLSL-Code ---------- */
+
+const MAX_RIPPLES = 20;
+
+const GLSL_COMMON = `
+  #define MAX_RIPPLES ${MAX_RIPPLES}
+  uniform float uTime;
+  /* "inner glow" intensity from the settings, 0.0 = off .. 1.0 = full */
+  uniform float uGlow;
+  /* Blitze an/aus (Checkbox): 1.0 = an, 0.0 = keine Blitze */
+  uniform float uBolts;
+  /* Faerbung (Checkbox): 1.0 = JEDES Licht hat eine Zufallsfarbe,
+     0.0 = nur jedes fuenfte, der Rest im Blau-Weiss-Drift */
+  uniform float uColorAll;
+  /* Variable Wellenhoehe (Seegang-Zyklus), animiert in JS.
+     Ersetzt den festen Faktor 0.045 der anderen Szenen. */
+  uniform float uWaveAmp;
+  /* Anker fuer den Inner Glow: Punkt unter der Oberflaeche im
+     Sichtbereich der Kamera (normierter Objektraum), animiert in JS */
+  uniform vec3 uGlowAnchor;
+  /* Geometrie-Massstab: position / uGeo ergibt die auf BASE normierte
+     Objektposition, mit der alle Wellen-/Ripple-/Glow-/Blitz-Funktionen
+     rechnen. So bleiben absolute Groessen unabhaengig von GEO. */
+  uniform float uGeo;
+  /* xyz = Einschlagpunkt im Objektraum, w = Startzeit (-1 = inaktiv) */
+  uniform vec4 uRipples[MAX_RIPPLES];
+  /* Staerke pro Einschlag: 1.0 = Tap-Splash, ~0.5 = Aufwirbeln beim Ziehen */
+  uniform float uRippleStrength[MAX_RIPPLES];
+
+  float hash1(float n) { return fract(sin(n * 12.9898) * 43758.5453); }
+  float hash3(vec3 p)  { return fract(sin(dot(p, vec3(127.1, 311.7, 74.7))) * 43758.5453); }
+
+  float vnoise3(vec3 p) {
+    vec3 i = floor(p);
+    vec3 f = fract(p);
+    vec3 u = f * f * (3.0 - 2.0 * f);
+    float n000 = hash3(i);
+    float n100 = hash3(i + vec3(1.0, 0.0, 0.0));
+    float n010 = hash3(i + vec3(0.0, 1.0, 0.0));
+    float n110 = hash3(i + vec3(1.0, 1.0, 0.0));
+    float n001 = hash3(i + vec3(0.0, 0.0, 1.0));
+    float n101 = hash3(i + vec3(1.0, 0.0, 1.0));
+    float n011 = hash3(i + vec3(0.0, 1.0, 1.0));
+    float n111 = hash3(i + vec3(1.0, 1.0, 1.0));
+    return mix(
+      mix(mix(n000, n100, u.x), mix(n010, n110, u.x), u.y),
+      mix(mix(n001, n101, u.x), mix(n011, n111, u.x), u.y),
+      u.z);
+  }
+
+  float fbm3(vec3 p) {
+    float v = 0.0;
+    float a = 0.5;
+    for (int i = 0; i < 4; i++) {
+      v += a * vnoise3(p);
+      p = p * 2.03 + vec3(17.3, 9.1, 4.7);
+      a *= 0.5;
+    }
+    return v;
+  }
+
+  /* Rohe Grundwellenhoehe, ca. [-1, 1]; pos = Objektraum-Position */
+  float waveRaw(vec3 pos, float t) {
+    vec3 p = pos * 3.2;
+    float h = 0.0;
+    h += sin(dot(p, normalize(vec3(0.9, 0.2, 0.4))) * 2.6 + t * 0.9) * 0.30;
+    h += sin(dot(p, normalize(vec3(-0.3, 0.8, 0.5))) * 3.4 - t * 0.7
+             + sin(dot(p, vec3(1.0, 0.0, 0.3)) + t * 0.3) * 0.6) * 0.22;
+    h += (fbm3(p * 1.6 + vec3(t * 0.25, -t * 0.20, t * 0.12)) - 0.5) * 1.05;
+    h += (fbm3(p * 4.2 + vec3(-t * 0.55, t * 0.42, -t * 0.30)) - 0.5) * 0.42;
+    return h;
+  }
+
+  /* Ripple-Hoehe durch Nutzer-Einschlaege (deutlich hoeher als Grundwellen) */
+  float rippleHeight(vec3 pos, float t) {
+    float h = 0.0;
+    for (int i = 0; i < MAX_RIPPLES; i++) {
+      vec4 rp = uRipples[i];
+      if (rp.w < 0.0) continue;
+      float age = t - rp.w;
+      if (age < 0.0 || age > 3.2) continue;
+      float s = uRippleStrength[i];
+      float r = distance(pos, rp.xyz);
+      float front = age * 0.52;
+      /* zentrale Splash-Spitze direkt nach dem Einschlag */
+      h += exp(-age * 6.0) * exp(-r * r * 175.0) * 1.6 * s;
+      /* auslaufende, gedaempfte Ringwellen */
+      float env = exp(-pow((r - front) * 4.5, 2.0));
+      h += env * exp(-age * 1.3) * cos(r * 38.0 - age * 16.0) * 1.1 * s;
+    }
+    return h * 0.055;
+  }
+
+  /* Glatter Blitz-Grat: hebt unter aktiven Entladungen einen echten
+     Wasserruecken an ("plastische" Blitze mit Parallaxe und korrekter
+     Schattierung aus naechster Naehe). Bewusst OHNE das feine
+     vnoise-Zickzack der Leucht-Version, damit die Funktion als Teil von
+     totalDisp guenstig bleibt (sie wird im Fragment-Shader 3x fuer den
+     Normalen-Gradienten ausgewertet). Der Zyklus-/Achsen-/Gate-Code muss
+     exakt dem der Leucht-Blitze entsprechen, damit Grat und Leuchten
+     zusammenfallen. Da der Koerper statisch im Ursprung steht, ist
+     Objektraum == Weltraum und dieselbe pos ist fuer beide nutzbar. */
+  float boltRidge(vec3 pos, float t) {
+    if (uBolts < 0.5) return 0.0;
+    float ridge = 0.0;
+    for (int i = 0; i < 5; i++) {
+      float fi = float(i);
+      float seed = 11.0 + fi * 13.7;
+      float per = 3.0 + hash1(seed) * 5.5;
+      float phase = hash1(seed + 1.0);
+      float cn  = floor(t / per + phase);
+      float cyc = fract(t / per + phase);
+      float gate = step(0.55, hash1(seed + cn * 17.0));
+      vec3 axis = normalize(vec3(
+        hash1(seed + cn * 29.0) - 0.5,
+        hash1(seed + cn * 31.0) - 0.5,
+        hash1(seed + cn * 37.0) - 0.5) + 0.001);
+      float window = 0.25 + 0.45 * hash1(seed + cn * 41.0);
+      float prog = cyc / window;
+      if (prog > 1.0) gate = 0.0;
+      float d = dot(pos, axis) - mix(-2.6, 2.6, clamp(prog, 0.0, 1.0));
+      float fade = smoothstep(0.0, 0.12, prog) * (1.0 - smoothstep(0.88, 1.0, prog));
+      ridge += exp(-d * d * 45.0) * gate * fade;
+    }
+    return ridge;
+  }
+
+  /* Gesamtverschiebung entlang dispDir. Wellenanteil mit variabler
+     Amplitude (Seegang), plus Nutzer-Ripples, plus Blitz-Grat. */
+  float totalDisp(vec3 pos, float t) {
+    return waveRaw(pos, t) * uWaveAmp + rippleHeight(pos, t)
+         + boltRidge(pos, t) * 0.05;
+  }
+`;
+
+const VERTEX_SHADER = `
+  #include <fog_pars_vertex>
+  /* Verschiebungsrichtung pro Vertex: im Flaecheninneren die Flaechennormale,
+     auf Kanten/Ecken die gemittelte Normale der angrenzenden Flaechen.
+     Dadurch verschieben alle beteiligten Flaechen ihre gemeinsamen
+     Kantenpunkte identisch – die Naht bleibt wasserdicht, es entstehen
+     keine Spalte (siehe seamless-face-displacement.md). */
+  attribute vec3 dispDir;
+  varying vec3 vWorldPos;
+  varying vec3 vObjPos;
+  ${GLSL_COMMON}
+  void main() {
+    /* Auf BASE normierte Objektposition: alle Wellen-/Ripple-Funktionen
+       rechnen damit, sodass ihre absoluten Groessen unabhaengig von GEO
+       sind. vObjPos traegt ebenfalls die normierte Position in den
+       Fragment-Shader. */
+    vec3 pn = position / uGeo;
+    vObjPos = pn;
+    /* h ist bereits eine absolute Verschiebung (in Welteinheiten), daher
+       NICHT mit uGeo multiplizieren: kleine Wellen auf grosser Flaeche. */
+    float h = totalDisp(pn, uTime);
+    vec3 displaced = position + dispDir * h;
+    vec4 wp = modelMatrix * vec4(displaced, 1.0);
+    vWorldPos = wp.xyz;
+    vec4 mvPosition = viewMatrix * wp;
+    gl_Position = projectionMatrix * mvPosition;
+    #include <fog_vertex>
+  }
+`;
+
+const FRAGMENT_SHADER = `
+  #include <fog_pars_fragment>
+  varying vec3 vWorldPos;
+  varying vec3 vObjPos;
+  ${GLSL_COMMON}
+
+  /* Inner-Glow-Lichter: Spawn-System wie in den anderen Szenen (jede
+     GLOW_SPAWN Sekunde ein neues Licht, GLOW_LIFE Sekunden Lebenszeit),
+     aber die Bahnen kreisen hier um den mitwandernden Anker uGlowAnchor –
+     einen Punkt unter der Oberflaeche im Sichtbereich der Kamera. So
+     befinden sich stets mehrere Lichter in verschiedenen Farben im
+     Blickfeld des Betrachters. */
+  #define GLOW_SPAWN 1.0
+  #define GLOW_LIFE  60.0
+  #define GLOW_MAX   60
+
+  vec3 glowCenter(float n, float age) {
+    float s = n * 7.31;
+    vec3 ph1 = vec3(hash1(s + 1.0), hash1(s + 2.0), hash1(s + 3.0)) * 6.2831853;
+    vec3 ph2 = vec3(hash1(s + 4.0), hash1(s + 5.0), hash1(s + 6.0)) * 6.2831853;
+    vec3 p = vec3(
+      sin(age * 0.33 + ph1.x) + 0.6 * sin(age * 0.19 + ph2.x),
+      sin(age * 0.27 + ph1.y) + 0.6 * sin(age * 0.23 + ph2.y),
+      sin(age * 0.29 + ph1.z) + 0.6 * sin(age * 0.13 + ph2.z)
+    ) * 0.55;
+    p += uGlowAnchor;
+    /* Sicherheitsklammer gegen beide Flaechenfamilien im NORMIERTEN Raum
+       (BASE): Sechsecke auf |x|+|y|+|z| = ${3 * BASE}, Quadrate auf
+       max(|x|,|y|,|z|) = ${2 * BASE}; beide mit Sicherheitsabstand,
+       damit der Lichtpunkt immer unter der Oberflaeche bleibt. */
+    float l1Max = ${3 * BASE} * 0.78;
+    float linfMax = ${2 * BASE} * 0.78;
+    float l1 = abs(p.x) + abs(p.y) + abs(p.z);
+    p *= l1Max / max(l1Max, l1);
+    float linf = max(max(abs(p.x), abs(p.y)), abs(p.z));
+    p *= linfMax / max(linfMax, linf);
+    return p;
+  }
+
+  /* Zufaelliger Farbton -> gesaettigtes RGB (Standard-Hue-Formel) */
+  vec3 hue2rgb(float h) {
+    vec3 k = mod(vec3(5.0, 3.0, 1.0) + h * 6.0, 6.0);
+    return 1.0 - clamp(min(k, 4.0 - k), 0.0, 1.0);
+  }
+
+  void main() {
+    float t = uTime;
+
+    /* Geometrische Normale aus Bildschirmableitungen */
+    vec3 dpdx = dFdx(vWorldPos);
+    vec3 dpdy = dFdy(vWorldPos);
+    vec3 N = normalize(cross(dpdx, dpdy));
+    vec3 V = normalize(cameraPosition - vWorldPos);
+    if (dot(N, V) < 0.0) N = -N;
+
+    /* Feine Normalstoerung: Gradient der Gesamtverschiebung */
+    float e = 0.008;
+    vec3 T1 = normalize(dpdx);
+    vec3 T2 = normalize(dpdy);
+    float h0 = totalDisp(vObjPos, t);
+    float g1 = (totalDisp(vObjPos + T1 * e, t) - h0) / e;
+    float g2 = (totalDisp(vObjPos + T2 * e, t) - h0) / e;
+    N = normalize(N - (T1 * g1 + T2 * g2) * 1.6);
+
+    /* Dunkles, reflektierendes Wasser */
+    float fresnel = pow(1.0 - max(dot(N, V), 0.0), 5.0);
+    vec3 deepCol = vec3(0.006, 0.012, 0.028);
+    vec3 shallowCol = vec3(0.030, 0.055, 0.105);
+    vec3 col = mix(deepCol, shallowCol, fresnel);
+
+    vec3 R = reflect(-V, N);
+    float horizon = 1.0 - clamp(abs(R.y), 0.0, 1.0);
+    col += vec3(0.055, 0.045, 0.110) * pow(horizon, 3.0) * (0.35 + 0.65 * fresnel);
+
+    vec3 L1 = normalize(vec3(0.45, 0.85, 0.25));
+    vec3 L2 = normalize(vec3(-0.60, 0.35, -0.55));
+    col += vec3(0.55, 0.62, 0.85) * pow(max(dot(R, L1), 0.0), 90.0) * 0.55;
+    col += vec3(0.35, 0.30, 0.70) * pow(max(dot(R, L2), 0.0), 60.0) * 0.30;
+
+    /* ---- Blitze: zufaellige, lila-blaue Fronten im WELTRAUM.
+       Aus der Naehe plastischer als in den Orbit-Szenen: schaerferer,
+       heisserer Kern, und der zugehoerige Wasserruecken kommt aus
+       boltRidge in totalDisp (echte Hoehe + Schattierung). ---- */
+    float boltCore = 0.0;
+    float boltGlow = 0.0;
+    if (uBolts > 0.5)
+    for (int i = 0; i < 5; i++) {
+      float fi = float(i);
+      float seed = 11.0 + fi * 13.7;
+      float per = 3.0 + hash1(seed) * 5.5;
+      float phase = hash1(seed + 1.0);
+      float cn  = floor(t / per + phase);   /* Zyklusnummer */
+      float cyc = fract(t / per + phase);
+
+      /* Zufall pro Zyklus: viele Zyklen fallen komplett aus */
+      float gate = step(0.55, hash1(seed + cn * 17.0));
+      /* zufaellige Sweep-Achse pro Zyklus (bestimmt die Laufrichtung) */
+      vec3 axis = normalize(vec3(
+        hash1(seed + cn * 29.0) - 0.5,
+        hash1(seed + cn * 31.0) - 0.5,
+        hash1(seed + cn * 37.0) - 0.5) + 0.001);
+      float window = 0.25 + 0.45 * hash1(seed + cn * 41.0);
+      float prog = cyc / window;
+      if (prog > 1.0) gate = 0.0;
+
+      /* Sweep-Koordinate: Projektion der (normierten) Objektposition auf
+         die Achse – skalierungsinvariant, da der Koerper statisch ist */
+      float c = dot(vObjPos, axis);
+      float head = mix(-2.6, 2.6, clamp(prog, 0.0, 1.0));
+
+      float jag = (vnoise3(vObjPos * 6.0 + vec3(seed + cn, t * 1.7, 0.0)) - 0.5) * 0.34
+                + (vnoise3(vObjPos * 20.0 + vec3(0.0, seed + cn, t * 3.4)) - 0.5) * 0.13;
+
+      float d = c - (head + jag);
+      float fade = smoothstep(0.0, 0.12, prog) * (1.0 - smoothstep(0.88, 1.0, prog));
+      float flicker = 0.65 + 0.35 * vnoise3(vec3(t * 12.0, seed + cn, 3.7));
+      float segments = smoothstep(0.25, 0.55,
+        vnoise3(vObjPos * 2.4 + vec3(seed + cn, 0.0, t * 0.9)));
+
+      /* schaerferer Kern + engeres Glimmen als in den Orbit-Szenen */
+      float core = exp(-abs(d) * 130.0);
+      float glow = exp(-abs(d) * 13.0);
+      float wake = exp(-abs(d) * 3.2) * 0.45;
+
+      boltCore += core * 3.0 * gate * fade * flicker * segments;
+      boltGlow += (glow * 0.9 + wake) * gate * fade * flicker * (0.4 + 0.6 * segments);
+    }
+
+    vec3 glowCol = vec3(0.30, 0.18, 0.95);
+    vec3 coreCol = vec3(0.92, 0.88, 1.00);
+    float waveMod = 0.75 + 0.5 * clamp(waveRaw(vObjPos, t) * 0.5 + 0.5, 0.0, 1.0);
+    col += glowCol * boltGlow * waveMod;
+    col += coreCol * boltCore;
+
+    /* ---- Inner glow, verstaerkt: groessere, hellere Lichtflecken, um
+       den Kamera-Anker gruppiert => immer mehrere farbige Lichter im
+       Sichtfeld. Puls strikt zwischen 60 % und 100 %. ---- */
+    if (uGlow > 0.001) {
+      float facing = pow(max(dot(N, V), 0.0), 1.6);
+      float transmit = 0.70 + 0.60 * clamp(waveRaw(vObjPos, t) * 0.5 + 0.5, 0.0, 1.0);
+      for (int j = 0; j < GLOW_MAX; j++) {
+        float n = floor(t / GLOW_SPAWN) - float(j);
+        if (n < 0.0) continue;
+        float age = t - n * GLOW_SPAWN;
+        if (age >= GLOW_LIFE) continue;
+
+        vec3 gc = glowCenter(n, age);
+        float gd = distance(vObjPos, gc);
+        /* weit entfernte Lichter tragen nichts bei: frueh abbrechen */
+        if (gd > 1.7) continue;
+        /* groesserer, weicherer Lichtfleck als in der Orbit-Szene */
+        float blob = exp(-gd * gd * 4.2);
+        /* Lebenszeit-Huellkurve: weich einblenden, am Ende ausklingen */
+        float env = smoothstep(0.0, 1.5, age) * (1.0 - smoothstep(55.0, GLOW_LIFE, age));
+        /* irregular breathing pulse, faded strictly between 60 % and 100 % */
+        float pp = n * 2.39996;
+        float pulse = 0.80 + 0.20 * (0.7 * sin(age * 1.15 + pp + 1.8 * sin(age * 0.31))
+                                   + 0.3 * sin(age * 2.73 + pp * 1.7 + 4.0));
+        /* Farbe: Standard in dieser Szene ist Faerbung AN (jedes Licht
+           mit eigenem, festem Zufallsfarbton); abgeschaltet greift das
+           Schema der anderen Szenen (jedes 5. zufaellig, Rest
+           Blau-Weiss-Drift) */
+        vec3 innerCol;
+        if (uColorAll > 0.5 || mod(n, 5.0) < 0.5) {
+          vec3 hue = hue2rgb(hash1(n * 7.31 + 8.0));
+          innerCol = mix(hue, vec3(1.0), 0.15); /* leicht entschaerft */
+        } else {
+          float w = 0.5 + 0.5 * sin(age * 0.47 + n * 3.1 + gc.x * 1.9 + gc.y * 1.3);
+          innerCol = mix(vec3(0.40, 0.60, 1.00), vec3(1.00, 0.98, 0.95), w);
+        }
+        /* staerker als in der Orbit-Szene (0.62 statt 0.45) */
+        col += innerCol * blob * (0.35 + 0.65 * facing) * env * pulse * transmit * 0.62 * uGlow;
+      }
+    }
+
+    /* ---- Gischt: Wellenkaemme + Blitze + Splashes. Der Kamm-Anteil
+       skaliert mit der variablen Wellenhoehe: ruhige See -> kaum Gischt,
+       raue See -> deutlich mehr. (uWaveAmp * 22.2 == 1 bei der
+       Referenzamplitude 0.045 der anderen Szenen.) ---- */
+    float raw = waveRaw(vObjPos, t) * (uWaveAmp * 22.2);
+    float sprayNoise = fbm3(vObjPos * 22.0 + vec3(t * 0.9, -t * 0.7, t * 0.5));
+    float crest = smoothstep(0.55, 0.95, raw * 0.9 + sprayNoise * 0.55);
+    float speckle = smoothstep(0.62, 0.92,
+      vnoise3(vObjPos * 85.0 + vec3(t * 2.0, t * 1.3, -t * 1.1)));
+    float spray = crest * (0.35 + 0.65 * speckle);
+    spray += clamp(boltGlow, 0.0, 1.0) * speckle * 0.5;
+
+    /* Spritzendes Wasser an den Einschlagstellen */
+    float splashSpray = 0.0;
+    float splashFlash = 0.0;
+    for (int i = 0; i < MAX_RIPPLES; i++) {
+      vec4 rp = uRipples[i];
+      if (rp.w < 0.0) continue;
+      float age = t - rp.w;
+      if (age < 0.0 || age > 3.2) continue;
+      float s = uRippleStrength[i];
+      float r = distance(vObjPos, rp.xyz);
+      float front = age * 0.52;
+      /* Gischtring, der mit der Wellenfront nach aussen laeuft */
+      splashSpray += exp(-age * 1.8) * exp(-pow((r - front) * 6.5, 2.0)) * s;
+      /* hochspritzende Tropfen rund ums Zentrum, kurz nach dem Einschlag */
+      float drops = smoothstep(0.5, 0.9,
+        vnoise3(vObjPos * 120.0 + vec3(rp.w * 37.0, age * 6.0, 0.0)));
+      splashSpray += exp(-age * 3.5) * exp(-r * r * 65.0) * drops * 1.6 * s;
+      /* kurzes, kaltes Aufleuchten des Wassers im Zentrum */
+      splashFlash += exp(-age * 4.5) * exp(-r * r * 80.0) * s;
+    }
+    spray += splashSpray * (0.5 + 0.5 * speckle);
+    col += vec3(0.35, 0.42, 0.75) * splashFlash * 0.5;
+
+    col = mix(col, vec3(0.42, 0.47, 0.58), clamp(spray, 0.0, 1.0) * 0.8);
+
+    gl_FragColor = vec4(col, 1.0);
+    #include <fog_fragment>
+  }
+`;
+
+/* ---------- Geometrie des abgestumpften Oktaeders ----------
+   Identisch zu dark-water-truncated-octahedron.html, inklusive der zwei
+   Weg-A-Fixes aus seamless-face-displacement.md Abschnitt 6:
+   Wicklung wird zusammen mit der Normale umgedreht (6.1), und der
+   Positions-Schluessel wird gitterquantisiert per Math.round statt mit
+   toFixed gebildet (6.2). */
+
+function makeTruncatedOctahedronGeometry(scale, seg) {
+  const V = (a, b, c) => new THREE.Vector3(a, b, c).multiplyScalar(scale);
+
+  function squareFace(axis, sign) {
+    const val = 2 * sign;
+    const others = ["x", "y", "z"].filter((a) => a !== axis);
+    const mk = (o1, o2) => {
+      const c = { x: 0, y: 0, z: 0 };
+      c[axis] = val; c[others[0]] = o1; c[others[1]] = o2;
+      return V(c.x, c.y, c.z);
+    };
+    return [mk(1, 0), mk(0, 1), mk(-1, 0), mk(0, -1)];
+  }
+
+  const HEX_PERMS = [[0, 1, 2], [0, 2, 1], [1, 2, 0], [2, 1, 0], [2, 0, 1], [1, 0, 2]];
+  function hexFace(ex, ey, ez) {
+    return HEX_PERMS.map(([a, b, c]) => {
+      const sx = a === 0 ? 1 : ex;
+      const sy = b === 0 ? 1 : ey;
+      const sz = c === 0 ? 1 : ez;
+      return V(sx * a, sy * b, sz * c);
+    });
+  }
+
+  const polygons = [];
+  for (const axis of ["x", "y", "z"]) for (const sign of [1, -1]) {
+    polygons.push(squareFace(axis, sign));
+  }
+  for (const ex of [1, -1]) for (const ey of [1, -1]) for (const ez of [1, -1]) {
+    polygons.push(hexFace(ex, ey, ez));
+  }
+
+  const rawPositions = [];
+  const rawFaceIdx = [];
+  const faceNormals = [];
+  const keyOf = (p) =>
+    `${Math.round(p.x * 1e4)}_${Math.round(p.y * 1e4)}_${Math.round(p.z * 1e4)}`;
+  const faceSetByKey = new Map();
+
+  polygons.forEach((polyIn, faceIdx) => {
+    let poly = polyIn;
+    const centroid = new THREE.Vector3();
+    poly.forEach((p) => centroid.add(p));
+    centroid.divideScalar(poly.length);
+
+    const eAB = new THREE.Vector3().subVectors(poly[1], poly[0]);
+    const eAC = new THREE.Vector3().subVectors(poly[2], poly[0]);
+    const n = new THREE.Vector3().crossVectors(eAB, eAC).normalize();
+    if (n.dot(centroid) < 0) {
+      poly = poly.slice().reverse();
+      n.negate();
+    }
+    faceNormals.push(n);
+
+    for (let k = 0; k < poly.length; k++) {
+      const A = centroid;
+      const B = poly[k];
+      const C = poly[(k + 1) % poly.length];
+      const ab = new THREE.Vector3().subVectors(B, A);
+      const ac = new THREE.Vector3().subVectors(C, A);
+
+      const grid = [];
+      for (let i = 0; i <= seg; i++) {
+        grid.push([]);
+        for (let j = 0; j <= seg - i; j++) {
+          grid[i].push(new THREE.Vector3()
+            .copy(A)
+            .addScaledVector(ab, i / seg)
+            .addScaledVector(ac, j / seg));
+        }
+      }
+      const push = (p) => {
+        rawPositions.push(p);
+        rawFaceIdx.push(faceIdx);
+        const key = keyOf(p);
+        let set = faceSetByKey.get(key);
+        if (!set) { set = new Set(); faceSetByKey.set(key, set); }
+        set.add(faceIdx);
+      };
+      for (let i = 0; i < seg; i++) {
+        for (let j = 0; j < seg - i; j++) {
+          push(grid[i][j]); push(grid[i + 1][j]); push(grid[i][j + 1]);
+          if (j < seg - i - 1) {
+            push(grid[i + 1][j]); push(grid[i + 1][j + 1]); push(grid[i][j + 1]);
+          }
+        }
+      }
+    }
+  });
+
+  const positions = [];
+  const normals = [];
+  const dispDirs = [];
+  const accum = new THREE.Vector3();
+
+  rawPositions.forEach((p, idx) => {
+    const faceIdx = rawFaceIdx[idx];
+    const n = faceNormals[faceIdx];
+    positions.push(p.x, p.y, p.z);
+    normals.push(n.x, n.y, n.z);
+
+    const set = faceSetByKey.get(keyOf(p));
+    accum.set(0, 0, 0);
+    set.forEach((fi) => accum.add(faceNormals[fi]));
+    accum.normalize();
+    dispDirs.push(accum.x, accum.y, accum.z);
+  });
+
+  /* Nach Flaeche gruppieren -> eine BufferGeometry je Flaeche. Dadurch
+     kann three.js pro Flaeche Frustum-Culling machen: Flaechen ausserhalb
+     des Blickfelds werden gar nicht erst gezeichnet. Die an einer Kante
+     doppelt vorhandenen Vertices tragen in beiden Nachbar-Meshes dasselbe
+     (gemittelte) dispDir und bleiben daher nahtlos. */
+  const faceGeos = [];
+  const faceCenters = [];
+  for (let f = 0; f < polygons.length; f++) {
+    const fp = [], fn = [], fd = [];
+    for (let idx = 0; idx < rawFaceIdx.length; idx++) {
+      if (rawFaceIdx[idx] !== f) continue;
+      fp.push(positions[idx * 3], positions[idx * 3 + 1], positions[idx * 3 + 2]);
+      fn.push(normals[idx * 3], normals[idx * 3 + 1], normals[idx * 3 + 2]);
+      fd.push(dispDirs[idx * 3], dispDirs[idx * 3 + 1], dispDirs[idx * 3 + 2]);
+    }
+    const g = new THREE.BufferGeometry();
+    g.setAttribute("position", new THREE.Float32BufferAttribute(fp, 3));
+    g.setAttribute("normal", new THREE.Float32BufferAttribute(fn, 3));
+    g.setAttribute("dispDir", new THREE.Float32BufferAttribute(fd, 3));
+    g.computeBoundingSphere();
+    /* Displacement kann Vertices leicht ueber die Rohgeometrie
+       hinausschieben – Kugel etwas aufweiten, damit Frustum-Culling am
+       Rand nicht zu frueh greift */
+    g.boundingSphere.radius += 0.3;
+    faceGeos.push(g);
+    faceCenters.push(faceNormals[f].clone().multiplyScalar(
+      /* Fusspunkt der Flaechenebene: Normale * Abstand vom Ursprung */
+      polygons[f].reduce((s, v) => s + faceNormals[f].dot(v), 0) / polygons[f].length));
+  }
+
+  return { faceGeos, faceNormals, faceCenters };
+}
+
+/* ---------- Der Koerper ---------- */
+
+const rippleUniform = [];
+for (let i = 0; i < MAX_RIPPLES; i++) {
+  rippleUniform.push(new THREE.Vector4(0, 0, 0, -1));
+}
+const rippleStrength = new Array(MAX_RIPPLES).fill(0);
+
+/* Feiner unterteilt als die Orbit-Szene (44 statt 36), da die Kamera dem
+   Wasser sehr nahe kommt: 72 Keile * 44^2 Dreiecke ~ 139.000 Dreiecke */
+const SEG = 44;
+const { faceGeos, faceNormals, faceCenters } =
+  makeTruncatedOctahedronGeometry(TRUNC_SCALE, SEG);
+const solidMat = new THREE.ShaderMaterial({
+  vertexShader: VERTEX_SHADER,
+  fragmentShader: FRAGMENT_SHADER,
+  uniforms: THREE.UniformsUtils.merge([
+    THREE.UniformsLib.fog,
+    { uTime: { value: 0 }, uGlow: { value: 0 },
+      uBolts: { value: 1 }, uColorAll: { value: 1 },
+      uWaveAmp: { value: 0.045 }, uGeo: { value: GEO } }
+  ]),
+  fog: true,
+  extensions: { derivatives: true }
+});
+/* merge() klont Vector4/Vector3-Werte nicht sauber, daher separat setzen */
+solidMat.uniforms.uRipples = { value: rippleUniform };
+solidMat.uniforms.uRippleStrength = { value: rippleStrength };
+solidMat.uniforms.uGlowAnchor = { value: new THREE.Vector3(0, 0, 0) };
+
+/* 14 Flaechen-Meshes, ein gemeinsames Material. Sie werden per
+   Frustum-Culling (automatisch) und einem Rueckseiten-Test (im
+   Render-Loop) aus dem Rendering genommen, wenn sie nicht im Blickfeld
+   liegen. */
+const faceMeshes = faceGeos.map((g) => new THREE.Mesh(g, solidMat));
+faceMeshes.forEach((m) => scene.add(m));
+/* "inner glow" intensity from the screensaver settings (?glow=0..1).
+   Ohne Parameter ist der Glow standardmaessig AN (1.0). */
+(function () {
+  const params = new URLSearchParams(location.search);
+  const raw = params.get("glow");
+  const v = raw === null ? 1 : parseFloat(raw);
+  solidMat.uniforms.uGlow.value = Math.min(1, Math.max(0, isNaN(v) ? 1 : v));
+  /* ?bolts=0|1 und ?colorall=0|1 setzen den Startzustand der Checkboxen.
+     Faerbung ist in dieser Szene standardmaessig AN ("stets verschiedene
+     Farben im Sichtbereich"). */
+  const bolts = params.get("bolts") !== "0";
+  const colorAll = params.get("colorall") !== "0";
+  solidMat.uniforms.uBolts.value = bolts ? 1 : 0;
+  solidMat.uniforms.uColorAll.value = colorAll ? 1 : 0;
+
+  const cbBolts = document.getElementById("cb-bolts");
+  const cbColor = document.getElementById("cb-color");
+  cbBolts.checked = bolts;
+  cbColor.checked = colorAll;
+  cbBolts.addEventListener("change", () => {
+    solidMat.uniforms.uBolts.value = cbBolts.checked ? 1 : 0;
+  });
+  cbColor.addEventListener("change", () => {
+    solidMat.uniforms.uColorAll.value = cbColor.checked ? 1 : 0;
+  });
+})();
+
+/* ---------- Schwebeflug: geglaettete Huelle des Koerpers ----------
+   14 Ebenen (n.p = d): 6 Quadrate (Achsennormalen, d = 2*TRUNC_SCALE)
+   und 8 Sechsecke (Oktanten-Normalen (±1,±1,±1)/sqrt3,
+   d = 3*TRUNC_SCALE/sqrt3). Smooth-Maximum
+   f_s(p) = k * ln( Sum_i e^{(n_i.p - d_i)/k} ) rundet die Kanten mit
+   Radius ~SMOOTH_K ab; die Kamera gleitet auf der Flaeche f_s = 0. */
+
+const SMOOTH_K = 0.15 * GEO;
+const PLANES = [];
+(function () {
+  const dSq = 2 * TRUNC_SCALE;
+  for (const a of [[1,0,0],[-1,0,0],[0,1,0],[0,-1,0],[0,0,1],[0,0,-1]]) {
+    PLANES.push({ n: new THREE.Vector3(a[0], a[1], a[2]), d: dSq });
+  }
+  const s3 = Math.sqrt(3);
+  const dHex = 3 * TRUNC_SCALE / s3;
+  for (const ex of [1,-1]) for (const ey of [1,-1]) for (const ez of [1,-1]) {
+    PLANES.push({ n: new THREE.Vector3(ex/s3, ey/s3, ez/s3), d: dHex });
+  }
+})();
+
+function fSharp(p) {
+  let m = -Infinity;
+  for (const pl of PLANES) m = Math.max(m, pl.n.dot(p) - pl.d);
+  return m;
+}
+function fSmooth(p) {
+  /* numerisch stabil: Maximum ausklammern */
+  const m = fSharp(p);
+  let sum = 0;
+  for (const pl of PLANES) sum += Math.exp((pl.n.dot(p) - pl.d - m) / SMOOTH_K);
+  return m + SMOOTH_K * Math.log(sum);
+}
+const _proj = new THREE.Vector3();
+/* Punkt der glatten Huelle in Richtung des Einheitsvektors u (Bisektion) */
+function projectSmooth(u, out) {
+  let lo = 0.5 * GEO, hi = 3.2 * GEO;
+  for (let i = 0; i < 30; i++) {
+    const mid = (lo + hi) / 2;
+    _proj.copy(u).multiplyScalar(mid);
+    if (fSmooth(_proj) < 0) lo = mid; else hi = mid;
+  }
+  return out.copy(u).multiplyScalar((lo + hi) / 2);
+}
+/* Normale der glatten Huelle: softmax-gewichtete Summe der Ebenennormalen */
+function smoothNormal(p, out) {
+  const m = fSharp(p);
+  out.set(0, 0, 0);
+  for (const pl of PLANES) {
+    const w = Math.exp((pl.n.dot(p) - pl.d - m) / SMOOTH_K);
+    out.addScaledVector(pl.n, w);
+  }
+  return out.normalize();
+}
+
+/* ---------- Kamera-Zustand des Schwebeflugs ---------- */
+
+/* Schwebehoehe ABSOLUT klein halten (nicht mit GEO skalieren): das ist
+   der Kern des Horizont-Effekts – die Augenhoehe bleibt knapp ueber dem
+   Wasser, waehrend die Flaeche viel groesser ist, sodass die Kante weit
+   weg rueckt. 0.55 liegt sicher ueber der maximalen Wellenhoehe (~0.095)
+   plus Blitzruecken. */
+const HOVER = 0.55;
+/* Flugtempo mit der Flaeche mitskaliert. Bewusst langsam (0.12 statt
+   0.24), damit der Weg ueber eine Flaeche bis zur naechsten Kante lang
+   ist und man laenger auf den fernen Horizont zuschwebt, bevor die
+   Ansicht kippt. Maßstab, Wellen und Horizont-Distanz bleiben davon
+   unberuehrt – nur die Reisegeschwindigkeit aendert sich. */
+const FLY_SPEED = 0.12 * GEO;
+
+const flight = {
+  P: new THREE.Vector3(),  /* Position auf der glatten Huelle */
+  F: new THREE.Vector3(),  /* Vorwaerts-Tangente */
+  N: new THREE.Vector3()   /* Huellen-Normale = "oben" */
+};
+(function () {
+  const u = new THREE.Vector3(0.35, 0.82, 0.45).normalize();
+  projectSmooth(u, flight.P);
+  smoothNormal(flight.P, flight.N);
+  const seedF = new THREE.Vector3(1, 0.2, -0.4);
+  flight.F.copy(seedF)
+    .addScaledVector(flight.N, -flight.N.dot(seedF))
+    .normalize();
+})();
+
+const _u = new THREE.Vector3();
+const _NxF = new THREE.Vector3();
+const _eye = new THREE.Vector3();
+const _look = new THREE.Vector3();
+const _lookDir = new THREE.Vector3();
+const _anchorTarget = new THREE.Vector3();
+
+function updateFlight(dt, t) {
+  /* vorwaerts entlang der Tangente, dann radial auf die Huelle
+     zurueckprojizieren */
+  flight.P.addScaledVector(flight.F, FLY_SPEED * dt);
+  _u.copy(flight.P).normalize();
+  projectSmooth(_u, flight.P);
+
+  /* neue Huellen-Normale; in der Kantenzone blendet sie stetig zur
+     naechsten Flaeche ueber -> die Ansicht kippt langsam hinunter */
+  smoothNormal(flight.P, flight.N);
+
+  /* Vorwaertsrichtung wieder tangential machen */
+  flight.F.addScaledVector(flight.N, -flight.N.dot(flight.F)).normalize();
+
+  /* sanfter Kursdrift (Mittelwert 0), damit der Pfad ueber die Zeit
+     verschiedene Flaechen ueberquert statt derselben Bahn zu folgen */
+  const drift = (0.20 * Math.sin(t * 0.071 + 1.3)
+               + 0.12 * Math.sin(t * 0.023 + 4.0)) * dt;
+  _NxF.crossVectors(flight.N, flight.F);
+  flight.F.multiplyScalar(Math.cos(drift))
+          .addScaledVector(_NxF, Math.sin(drift))
+          .normalize();
+}
+
+/* ---------- Nebelschwaden ---------- */
+
+function makeFogTexture() {
+  const size = 256;
+  const cnv = document.createElement("canvas");
+  cnv.width = cnv.height = size;
+  const ctx = cnv.getContext("2d");
+  const g = ctx.createRadialGradient(size / 2, size / 2, 0, size / 2, size / 2, size / 2);
+  g.addColorStop(0.0, "rgba(140,146,190,0.55)");
+  g.addColorStop(0.4, "rgba(110,116,165,0.22)");
+  g.addColorStop(1.0, "rgba(90,95,140,0.0)");
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, size, size);
+  return new THREE.CanvasTexture(cnv);
+}
+
+const fogTex = makeFogTexture();
+const fogSprites = [];
+for (let i = 0; i < 14; i++) {
+  const mat = new THREE.SpriteMaterial({
+    map: fogTex,
+    transparent: true,
+    opacity: 0.05 + Math.random() * 0.07,
+    depthWrite: false
+  });
+  const s = new THREE.Sprite(mat);
+  const angle = Math.random() * Math.PI * 2;
+  const radius = 2.2 + Math.random() * 1.6;
+  s.position.set(Math.cos(angle) * radius, -1.0 + Math.random() * 2.1, Math.sin(angle) * radius);
+  const scale = 2.3 + Math.random() * 2.7;
+  s.scale.set(scale, scale, 1);
+  s.userData = {
+    angle, radius,
+    speed: (Math.random() * 0.5 + 0.15) * (Math.random() < 0.5 ? -1 : 1) * 0.05,
+    bob: Math.random() * Math.PI * 2
+  };
+  fogSprites.push(s);
+  scene.add(s);
+}
+
+/* ---------- Gischtschwall "ins Gesicht" (Fake-Unreal-Bloom) ----------
+   Partikelschwall aus additiv geblendeten Soft-Sprites (weisser Kern +
+   grosser Farbhalo je Tropfen), der vom Wasser vor der Kamera hochschiesst
+   und an ihr vorbeifliegt. Beim Kamera-Treffer: gluehende Splats auf der
+   #splat-Ebene (mix-blend-mode: screen), die langsam abtropfen. */
+
+function makeDropTexture() {
+  const size = 128;
+  const cnv = document.createElement("canvas");
+  cnv.width = cnv.height = size;
+  const ctx = cnv.getContext("2d");
+  const g = ctx.createRadialGradient(size / 2, size / 2, 0, size / 2, size / 2, size / 2);
+  g.addColorStop(0.0, "rgba(255,255,255,1.0)");
+  g.addColorStop(0.25, "rgba(255,255,255,0.55)");
+  g.addColorStop(1.0, "rgba(255,255,255,0.0)");
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, size, size);
+  return new THREE.CanvasTexture(cnv);
+}
+const dropTex = makeDropTexture();
+
+function hueToRgb(h) {
+  const f = (n) => {
+    const k = (n + h * 6) % 6;
+    return 1 - Math.min(Math.max(Math.min(k, 4 - k), 0), 1);
+  };
+  return [f(5), f(3), f(1)];
+}
+
+const bursts = [];
+const BURST_LIFE = 1.5;
+
+function spawnSprayBurst() {
+  /* Ursprung: Trefferpunkt eines Strahls von der Kamera schraeg nach
+     unten aufs Wasser vor ihr */
+  _lookDir.copy(flight.F).addScaledVector(flight.N, -0.75).normalize();
+  raycaster.set(camera.position, _lookDir);
+  const hits = raycaster.intersectObjects(faceMeshes, false);
+  if (hits.length === 0) return;
+  const origin = hits[0].point.clone();
+
+  /* dort auch echte Ringwellen ausloesen */
+  spawnSplashAt(origin, 1.0);
+
+  const count = 26 + Math.floor(Math.random() * 26);
+  const hue = Math.random();
+  const [cr, cg, cb] = hueToRgb(hue);
+  const positions = new Float32Array(count * 3);
+  const colors = new Float32Array(count * 3);
+  const velocities = [];
+  const toCam = new THREE.Vector3().subVectors(camera.position, origin).normalize();
+  for (let i = 0; i < count; i++) {
+    positions[i * 3 + 0] = origin.x + (Math.random() - 0.5) * 0.10;
+    positions[i * 3 + 1] = origin.y + (Math.random() - 0.5) * 0.10;
+    positions[i * 3 + 2] = origin.z + (Math.random() - 0.5) * 0.10;
+    /* leicht entsaettigt Richtung Weiss, damit der Kern "glueht" */
+    colors[i * 3 + 0] = cr * 0.8 + 0.2;
+    colors[i * 3 + 1] = cg * 0.8 + 0.2;
+    colors[i * 3 + 2] = cb * 0.8 + 0.2;
+    const v = new THREE.Vector3()
+      .copy(toCam).multiplyScalar(1.2 + Math.random() * 1.3)
+      .addScaledVector(flight.N, 0.7 + Math.random() * 0.9);
+    v.x += (Math.random() - 0.5) * 0.7;
+    v.y += (Math.random() - 0.5) * 0.7;
+    v.z += (Math.random() - 0.5) * 0.7;
+    velocities.push(v);
+  }
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute("position", new THREE.BufferAttribute(positions, 3));
+  geo.setAttribute("color", new THREE.BufferAttribute(colors, 3));
+  const mkMat = (size, opacity) => new THREE.PointsMaterial({
+    map: dropTex, size, transparent: true, opacity,
+    depthWrite: false, blending: THREE.AdditiveBlending,
+    vertexColors: true, sizeAttenuation: true
+  });
+  /* zwei Ebenen pro Schwall: kleiner heller Kern + grosser weicher Halo
+     ueber derselben Geometrie ergibt den Bloom-Eindruck */
+  const core = new THREE.Points(geo, mkMat(0.045, 0.95));
+  const halo = new THREE.Points(geo, mkMat(0.17, 0.28));
+  scene.add(core); scene.add(halo);
+  bursts.push({
+    geo, core, halo, velocities,
+    gravityDir: flight.N.clone(),
+    age: 0, hue, splatted: false
+  });
+}
+
+function updateBursts(dt) {
+  for (let b = bursts.length - 1; b >= 0; b--) {
+    const burst = bursts[b];
+    burst.age += dt;
+    const pos = burst.geo.attributes.position.array;
+    for (let i = 0; i < burst.velocities.length; i++) {
+      const v = burst.velocities[i];
+      v.addScaledVector(burst.gravityDir, -2.2 * dt);
+      pos[i * 3 + 0] += v.x * dt;
+      pos[i * 3 + 1] += v.y * dt;
+      pos[i * 3 + 2] += v.z * dt;
+      /* Tropfen nahe der Kamera => Splat auf dem Bildschirm (einmal
+         pro Schwall) */
+      if (!burst.splatted) {
+        const dx = pos[i * 3 + 0] - camera.position.x;
+        const dy = pos[i * 3 + 1] - camera.position.y;
+        const dz = pos[i * 3 + 2] - camera.position.z;
+        if (dx * dx + dy * dy + dz * dz < 0.055) {
+          burst.splatted = true;
+          screenSplat(burst.hue);
+        }
+      }
+    }
+    burst.geo.attributes.position.needsUpdate = true;
+    const fade = Math.max(0, 1 - burst.age / BURST_LIFE);
+    burst.core.material.opacity = 0.95 * fade;
+    burst.halo.material.opacity = 0.28 * fade;
+    if (burst.age >= BURST_LIFE) {
+      scene.remove(burst.core); scene.remove(burst.halo);
+      burst.core.material.dispose(); burst.halo.material.dispose();
+      burst.geo.dispose();
+      bursts.splice(b, 1);
+    }
+  }
+}
+
+function screenSplat(hue) {
+  const layer = document.getElementById("splat");
+  if (!layer) return;
+  const [r, g, b] = hueToRgb(hue).map((c) => Math.round((c * 0.75 + 0.25) * 255));
+  const count = 5 + Math.floor(Math.random() * 4);
+  for (let i = 0; i < count; i++) {
+    const d = document.createElement("div");
+    d.className = "drop";
+    const size = 50 + Math.random() * 170;
+    /* zur Bildmitte hin verdichtet */
+    const x = 50 + (Math.random() - 0.5) * 76;
+    const y = 45 + (Math.random() - 0.5) * 70;
+    d.style.width = d.style.height = size + "px";
+    d.style.left = `calc(${x}% - ${size / 2}px)`;
+    d.style.top = `calc(${y}% - ${size / 2}px)`;
+    d.style.background =
+      `radial-gradient(circle, rgba(255,255,255,0.95) 0%,` +
+      ` rgba(${r},${g},${b},0.55) 32%, rgba(${r},${g},${b},0) 70%)`;
+    d.style.opacity = "0.9";
+    d.style.transform = "translateY(0) scale(1)";
+    d.style.transition = "opacity 1.5s ease-out, transform 1.7s ease-in";
+    layer.appendChild(d);
+    requestAnimationFrame(() => requestAnimationFrame(() => {
+      d.style.opacity = "0";
+      d.style.transform = `translateY(${26 + Math.random() * 40}px) scale(1.12)`;
+    }));
+    setTimeout(() => d.remove(), 1900);
+  }
+}
+
+/* ---------- Splash-Erzeugung ---------- */
+
+const raycaster = new THREE.Raycaster();
+const ndc = new THREE.Vector2();
+let rippleIndex = 0;
+const clock = new THREE.Clock();
+
+function spawnSplashAt(worldPoint, strength) {
+  /* Meshes stehen untransformiert im Ursprung (Geometrie bereits gross
+     gebaut), daher ist der Weltpunkt zugleich die grosse Objektposition;
+     fuer den auf BASE normierten Ripple-Raum durch GEO teilen. */
+  const slot = rippleIndex % MAX_RIPPLES;
+  rippleUniform[slot].set(
+    worldPoint.x / GEO, worldPoint.y / GEO, worldPoint.z / GEO, clock.elapsedTime);
+  rippleStrength[slot] = strength;
+  rippleIndex++;
+}
+
+function spawnSplash(clientX, clientY, strength) {
+  ndc.x = (clientX / window.innerWidth) * 2 - 1;
+  ndc.y = -(clientY / window.innerHeight) * 2 + 1;
+  raycaster.setFromCamera(ndc, camera);
+  const hits = raycaster.intersectObjects(faceMeshes, false);
+  if (hits.length === 0) return;
+  spawnSplashAt(hits[0].point, strength);
+}
+
+/* ---------- Eingaben: nur Wasser aufwirbeln, KEINE Kamerasteuerung ----------
+   Ego-Perspektive: kein Zoom, keine Neigung, kein Orbit. Tippen erzeugt
+   einen Splash, Ziehen wirbelt das Wasser entlang der Spur auf. */
+
+const pointers = new Map();
+let lastStir = 0;
+const canvas = renderer.domElement;
+
+function markActive() {
+  const hint = document.getElementById("hint");
+  if (hint) hint.style.opacity = "0";
+}
+
+canvas.addEventListener("pointerdown", (e) => {
+  canvas.setPointerCapture(e.pointerId);
+  pointers.set(e.pointerId, {
+    x: e.clientX, y: e.clientY,
+    startX: e.clientX, startY: e.clientY,
+    startTime: performance.now()
+  });
+  markActive();
+});
+
+canvas.addEventListener("pointermove", (e) => {
+  const prev = pointers.get(e.pointerId);
+  if (!prev) return;
+  markActive();
+  const dx = e.clientX - prev.x;
+  const dy = e.clientY - prev.y;
+  const now = performance.now();
+  const speed = Math.hypot(dx, dy);
+  if (now - lastStir > 60 && speed > 1.5) {
+    const strength = Math.min(0.75, 0.30 + speed * 0.012);
+    spawnSplash(e.clientX, e.clientY, strength);
+    lastStir = now;
+  }
+  prev.x = e.clientX;
+  prev.y = e.clientY;
+});
+
+canvas.addEventListener("pointerup", (e) => {
+  const p = pointers.get(e.pointerId);
+  if (p) {
+    const moved = Math.hypot(e.clientX - p.startX, e.clientY - p.startY);
+    const held = performance.now() - p.startTime;
+    if (moved < 8 && held < 350) spawnSplash(e.clientX, e.clientY, 1.0);
+  }
+  pointers.delete(e.pointerId);
+});
+
+canvas.addEventListener("pointercancel", (e) => pointers.delete(e.pointerId));
+
+/* ---------- Resize ---------- */
+
+window.addEventListener("resize", () => {
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(window.innerWidth, window.innerHeight);
+});
+
+/* ---------- Render-Schleife ---------- */
+
+let nextBurstAt = 4 + Math.random() * 6;
+
+function animate() {
+  requestAnimationFrame(animate);
+  const dt = Math.min(clock.getDelta(), 0.05);
+  const t = clock.elapsedTime;
+
+  solidMat.uniforms.uTime.value = t;
+
+  /* Seegang-Zyklus: Wellenhoehe pendelt langsam zwischen ruhig (~0.02)
+     und rau (~0.095); zwei inkommensurable Sinus fuer unregelmaessige,
+     nie exakt wiederkehrende Wetterlagen */
+  const sea = Math.min(1, Math.max(0,
+    0.5 + 0.38 * Math.sin(t * 0.041 + 1.0) + 0.18 * Math.sin(t * 0.017 + 3.0)));
+  solidMat.uniforms.uWaveAmp.value = 0.02 + 0.075 * sea;
+
+  /* Schwebeflug fortschreiben */
+  updateFlight(dt, t);
+
+  /* Augenhoehe: HOVER ueber der glatten Huelle, plus Kompensation der
+     Kanten-Abrundung (die glatte Huelle liegt an Kanten/Ecken bis zu
+     ~k*ln3 INNERHALB des scharfen Koerpers; -fSharp(P) hebt die Kamera
+     dort entsprechend an, damit der Abstand zum Wasser konstant bleibt),
+     plus ein leichtes Auf-und-ab-Wippen */
+  const lift = HOVER - fSharp(flight.P) + 0.02 * Math.sin(t * 1.1);
+  _eye.copy(flight.P).addScaledVector(flight.N, lift);
+  camera.position.copy(_eye);
+
+  /* Standard-Neigung nach unten, damit die Wasseroberflaeche gut
+     sichtbar ist; "oben" folgt der Huellen-Normale => an Kanten kippt
+     die ganze Ansicht langsam auf die naechste Flaeche hinunter. Etwas
+     flacher als in der kleinen Szene (0.32 statt 0.42), damit der Blick
+     staerker in die Ferne zum Horizont geht. */
+  _lookDir.copy(flight.F).addScaledVector(flight.N, -0.32).normalize();
+  _look.copy(_eye).add(_lookDir);
+  camera.up.copy(flight.N);
+  camera.lookAt(_look);
+
+  /* Inner-Glow-Anker weich einem Punkt unter der Oberflaeche vor der
+     Kamera nachfuehren. flight.P liegt im grossen Objektraum; der Shader
+     erwartet den Anker im NORMIERTEN Raum, daher durch GEO teilen. Die
+     F-Verschiebung ist ein Einheitsvektor und bleibt normiert. */
+  _anchorTarget.copy(flight.P).divideScalar(GEO)
+    .multiplyScalar(0.55).addScaledVector(flight.F, 0.55);
+  const ka = 1.0 - Math.pow(0.15, dt);
+  solidMat.uniforms.uGlowAnchor.value.lerp(_anchorTarget, ka);
+
+  /* ---- Per-Flaeche-Culling: nur Flaechen zeichnen, die potenziell im
+     Blickfeld liegen. Frustum-Culling erledigt three.js automatisch pro
+     Mesh; hier zusaetzlich ein billiger Rueckseiten-Test, der die klar
+     abgewandte Haelfte des Koerpers entfernt (Normale zeigt entgegen der
+     Blickrichtung zur Kamera). ---- */
+  const camDir = _eye.clone().normalize();
+  for (let f = 0; f < faceMeshes.length; f++) {
+    faceMeshes[f].visible = faceNormals[f].dot(camDir) > -0.35;
+  }
+
+  /* Gischtschwaelle in unregelmaessigen Abstaenden */
+  if (t > nextBurstAt) {
+    spawnSprayBurst();
+    nextBurstAt = t + 5 + Math.random() * 9;
+  }
+  updateBursts(dt);
+
+  for (const s of fogSprites) {
+    const u = s.userData;
+    u.angle += u.speed * dt;
+    s.position.x = Math.cos(u.angle) * u.radius;
+    s.position.z = Math.sin(u.angle) * u.radius;
+    s.position.y += Math.sin(t * 0.3 + u.bob) * 0.0006;
+  }
+
+  renderer.render(scene, camera);
+}
+animate();
+</script>
+</body>
+</html>

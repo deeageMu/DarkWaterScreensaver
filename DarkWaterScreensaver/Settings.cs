@@ -12,33 +12,54 @@ public enum SaverMode
 /// <summary>Katalog der mitgelieferten Szenen unter Assets\scenes.</summary>
 public static class SceneCatalog
 {
-    public sealed record Scene(string File, string DisplayName);
+    /// <param name="SupportsEffects">
+    /// True for scenes that carry the in-page effect checkboxes (bolts /
+    /// colouring). Those scenes read ?bolts=0|1 and ?colorall=0|1; the
+    /// settings dialog is the source of truth for them.
+    /// </param>
+    public sealed record Scene(string File, string DisplayName, bool SupportsEffects = false);
 
     public static readonly IReadOnlyList<Scene> All =
     [
         new("dark-water-cube-interactive.html", "Würfel"),
         new("dark-water-sphere.html", "Sphäre"),
         new("dark-water-knot.html", "Knoten"),
-        new("dark-water-knot-alive.html", "Knoten (lebendig)")
+        new("dark-water-knot-alive.html", "Knoten (lebendig)"),
+        new("dark-water-octahedron.html", "Oktaeder", SupportsEffects: true),
+        new("dark-water-truncated-octahedron-hover.html",
+            "Abgestumpftes Oktaeder (Schwebeflug)", SupportsEffects: true),
+        new("dark-water-dive-fast.html", "Durchflug (schnell)", SupportsEffects: true)
     ];
 
     public static string ScenesRoot => Path.Combine(AppContext.BaseDirectory, "Assets", "scenes");
 
-    public static bool Exists(string file) =>
-        All.Any(s => string.Equals(s.File, file, StringComparison.OrdinalIgnoreCase));
+    public static Scene? Find(string file) =>
+        All.FirstOrDefault(s => string.Equals(s.File, file, StringComparison.OrdinalIgnoreCase));
+
+    public static bool Exists(string file) => Find(file) is not null;
+
+    /// <summary>True if any scene offers the bolts / colouring checkboxes.</summary>
+    public static bool AnySupportsEffects => All.Any(s => s.SupportsEffects);
 
     /// <summary>
-    /// file:/// URI of the scene. Saver mode appends ?mode=saver (hides hint
-    /// and cursor); glow=1 enables the inner glow effect.
+    /// file:/// URI of the scene. Saver mode appends ?mode=saver (hides hint,
+    /// in-page panel and cursor). glow, bolts and colorall are always written
+    /// explicitly, because the scenes differ in what they default to when a
+    /// parameter is missing.
     /// </summary>
-    public static Uri GetUri(string file, bool saverMode, bool glow = false)
+    public static Uri GetUri(string file, bool saverMode, Settings settings)
     {
         var path = Path.Combine(ScenesRoot, file);
         var uri = new Uri(path).AbsoluteUri;
         var query = new List<string>();
         if (saverMode) query.Add("mode=saver");
-        if (glow) query.Add("glow=1");
-        return new Uri(query.Count > 0 ? uri + "?" + string.Join("&", query) : uri);
+        query.Add(settings.Glow ? "glow=1" : "glow=0");
+        if (Find(file)?.SupportsEffects == true)
+        {
+            query.Add(settings.Bolts ? "bolts=1" : "bolts=0");
+            query.Add(settings.ColorAll ? "colorall=1" : "colorall=0");
+        }
+        return new Uri(uri + "?" + string.Join("&", query));
     }
 
     public static string PickRandom(Random rng, string? exclude = null)
@@ -64,6 +85,15 @@ public sealed class Settings
     public int IntervalSeconds { get; set; } = 30;
     public bool Glow { get; set; }
 
+    /// <summary>Lightning fronts sweeping over the body (scene checkbox "Blitze").</summary>
+    public bool Bolts { get; set; } = true;
+
+    /// <summary>
+    /// Colouring (scene checkbox "Färbung"): every inner-glow light gets its own
+    /// random hue instead of only every fifth one.
+    /// </summary>
+    public bool ColorAll { get; set; }
+
     public static Settings Load()
     {
         var settings = new Settings();
@@ -84,6 +114,12 @@ public sealed class Settings
         if (key.GetValue("Glow") is int glow)
             settings.Glow = glow != 0;
 
+        if (key.GetValue("Bolts") is int bolts)
+            settings.Bolts = bolts != 0;
+
+        if (key.GetValue("ColorAll") is int colorAll)
+            settings.ColorAll = colorAll != 0;
+
         return settings;
     }
 
@@ -94,5 +130,7 @@ public sealed class Settings
         key.SetValue("SceneFile", SceneFile);
         key.SetValue("IntervalSeconds", IntervalSeconds, RegistryValueKind.DWord);
         key.SetValue("Glow", Glow ? 1 : 0, RegistryValueKind.DWord);
+        key.SetValue("Bolts", Bolts ? 1 : 0, RegistryValueKind.DWord);
+        key.SetValue("ColorAll", ColorAll ? 1 : 0, RegistryValueKind.DWord);
     }
 }

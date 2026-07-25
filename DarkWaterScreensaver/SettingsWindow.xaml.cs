@@ -23,6 +23,7 @@ public partial class SettingsWindow : Window
                 Margin = new Thickness(0, 2, 0, 2),
                 IsChecked = string.Equals(scene.File, settings.SceneFile, StringComparison.OrdinalIgnoreCase)
             };
+            button.Checked += OnSceneSelected;
             _sceneButtons.Add(button);
             ScenePanel.Children.Add(button);
         }
@@ -32,10 +33,14 @@ public partial class SettingsWindow : Window
         RandomCheckBox.IsChecked = settings.Mode == SaverMode.Random;
         IntervalTextBox.Text = settings.IntervalSeconds.ToString();
         GlowCheckBox.IsChecked = settings.Glow;
+        BoltsCheckBox.IsChecked = settings.Bolts;
+        ColorCheckBox.IsChecked = settings.ColorAll;
         UpdateEnabledState();
     }
 
     private void OnRandomToggled(object sender, RoutedEventArgs e) => UpdateEnabledState();
+
+    private void OnSceneSelected(object sender, RoutedEventArgs e) => UpdateEnabledState();
 
     private void UpdateEnabledState()
     {
@@ -43,7 +48,20 @@ public partial class SettingsWindow : Window
         foreach (var button in _sceneButtons)
             button.IsEnabled = !random;
         IntervalTextBox.IsEnabled = random;
+
+        // Bolts / colouring only exist in some scenes; in random mode every scene
+        // may come up, so the effect options stay available there.
+        var effects = random
+            ? SceneCatalog.AnySupportsEffects
+            : SceneCatalog.Find(SelectedScene)?.SupportsEffects == true;
+        BoltsCheckBox.IsEnabled = effects;
+        ColorCheckBox.IsEnabled = effects;
+        EffectsHint.Visibility = effects ? Visibility.Collapsed : Visibility.Visible;
     }
+
+    private string SelectedScene =>
+        _sceneButtons.FirstOrDefault(b => b.IsChecked == true)?.Tag as string
+        ?? SceneCatalog.All[0].File;
 
     private void OnOk(object sender, RoutedEventArgs e)
     {
@@ -54,10 +72,11 @@ public partial class SettingsWindow : Window
         var settings = new Settings
         {
             Mode = RandomCheckBox.IsChecked == true ? SaverMode.Random : SaverMode.Fixed,
-            SceneFile = _sceneButtons.FirstOrDefault(b => b.IsChecked == true)?.Tag as string
-                        ?? SceneCatalog.All[0].File,
+            SceneFile = SelectedScene,
             IntervalSeconds = interval,
-            Glow = GlowCheckBox.IsChecked == true
+            Glow = GlowCheckBox.IsChecked == true,
+            Bolts = BoltsCheckBox.IsChecked == true,
+            ColorAll = ColorCheckBox.IsChecked == true
         };
         settings.Save();
         Close();
