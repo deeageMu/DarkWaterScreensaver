@@ -1,7 +1,8 @@
 # DarkWaterScreenSaver
 
 A Windows screensaver (`.scr`) that renders dark, stormy Three.js water scenes
-(cube, sphere, torus knot) fullscreen via WebView2.
+(cube, sphere, torus knot, octahedron, and two first-person flights) fullscreen
+via WebView2.
 
 ## Scenes
 
@@ -12,6 +13,31 @@ A Windows screensaver (`.scr`) that renders dark, stormy Three.js water scenes
 | Knot | Knot (alive) |
 |---|---|
 | ![Knot](screenshots/dark-water-knot.png) | ![Knot alive](screenshots/dark-water-knot-alive.png) |
+
+### Octahedron
+
+An eight-sided body of dark water. Lightning fronts sweep across the faces, and
+below the surface a swarm of lights drifts through the interior — a new one
+every second, each living for a minute.
+
+![Octahedron](screenshots/dark-water-octahedron.png)
+
+### Truncated octahedron (hover flight)
+
+First person: the viewer glides slowly just above the water on the faces of a
+truncated octahedron. At each edge the view tips over by itself onto the next
+face. Spray occasionally shoots up past the camera, and the sea state drifts
+between calm and rough.
+
+![Truncated octahedron, hover flight](screenshots/dark-water-truncated-octahedron-hover.png)
+
+### Fly-through (fast)
+
+An endless loop that dives straight through the centre of the body and swings
+back around the outside through a nebula sky. Inside, plasma snow drifts through
+the water; every pass picks a fresh neon palette.
+
+![Fly-through](screenshots/dark-water-dive-fast.png)
 
 ## Glow
 
@@ -56,9 +82,9 @@ manually — use the **`.exe`** for manual testing:
 | Command | Mode |
 |---|---|
 | `DarkWaterScreensaver.exe /s` | Fullscreen screensaver (all monitors, exits on mouse/keyboard input) |
-| `DarkWaterScreensaver.exe /c` | Settings dialog (choose scene, or random switching every X minutes) |
+| `DarkWaterScreensaver.exe /c` | Settings dialog (choose scene and effects, or random switching every X seconds) |
 | `DarkWaterScreensaver.exe /p <HWND>` | Miniature preview rendered into the given window handle (used by the Windows screensaver dialog) |
-| `DarkWaterScreensaver.exe /i` | Interactive viewer: fullscreen on the primary monitor, but mouse and keyboard do **not** end the program — drag to orbit, click/tap for a splash, mouse wheel to zoom. Press **Escape** to quit. |
+| `DarkWaterScreensaver.exe /i` | Interactive viewer: fullscreen on the primary monitor, but mouse and keyboard do **not** end the program — drag to orbit, click/tap for a splash, mouse wheel to zoom. The two flight scenes fly on a fixed path, so there dragging only stirs the water. Press **Escape** to quit. |
 | `DarkWaterScreensaver.exe` (no argument) | Same as `/c` |
 
 Arguments are case-insensitive; `-s`, `/S`, `/c:12345`, `/c 12345` etc. all work.
@@ -86,12 +112,25 @@ the `.scr` → **Configure**.
 
 The settings dialog (`/c`) offers:
 
-- **Scene**: cube, sphere, knot, or knot (alive)
+- **Scene**: cube, sphere, knot, knot (alive), octahedron, truncated octahedron
+  (hover flight), or fly-through (fast)
 - **Random switching**: picks a random scene at start and switches to a
-  different random scene every X seconds (5–3600, default 30)
+  different random scene every X seconds (5–3600, default 30). While enabled,
+  the scene list is disabled.
 - **Glow**: pulsing white/blue inner light — the whole body for cube and
-  sphere, a slowly wandering glow spot for the knot scenes
+  sphere, a slowly wandering glow spot for the knot scenes, and a swarm of
+  drifting lights in the octahedron and flight scenes
+- **Effects** — only available in the octahedron and the two flight scenes,
+  which is why these two boxes grey out for the other scenes:
+  - **Bolts**: lightning fronts sweeping across the water (on by default)
+  - **Colouring**: gives *every* inner-glow light its own random hue instead
+    of only every fifth one, leaving the rest in the blue/white drift
+
+These options used to be checkboxes drawn inside the scenes themselves. The
+in-page panel still exists for standalone and `/i` use and is initialised from
+the settings, but the dialog is the source of truth — in screensaver mode the
+panel is hidden along with the hint text and the cursor.
 
 Settings are stored per user in the registry under
 `HKEY_CURRENT_USER\Software\DarkWaterScreensaver`
-(`Mode`, `SceneFile`, `IntervalSeconds`, `Glow`).
+(`Mode`, `SceneFile`, `IntervalSeconds`, `Glow`, `Bolts`, `ColorAll`).
