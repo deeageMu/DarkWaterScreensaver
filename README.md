@@ -131,6 +131,8 @@ in-page panel still exists for standalone and `/i` use and is initialised from
 the settings, but the dialog is the source of truth — in screensaver mode the
 panel is hidden along with the hint text and the cursor.
 
+![Settings](screenshots/settings.png)
+
 Settings are stored per user in the registry under
 `HKEY_CURRENT_USER\Software\DarkWaterScreensaver`
 (`Mode`, `SceneFile`, `IntervalSeconds`, `Glow`, `Bolts`, `ColorAll`).
